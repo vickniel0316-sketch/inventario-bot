@@ -67,9 +67,7 @@ def enviar_reporte_diario():
             try:
                 data = sheet_stock.get_all_records()
 
-                bajos = []
-                iguales = []
-                cercanos = []
+                bajos, iguales, cercanos = [], [], []
 
                 for fila in data:
                     producto = fila.get("Producto", "")
@@ -105,7 +103,7 @@ def enviar_reporte_diario():
         time.sleep(30)
 
 # ==========================================
-# CONFIRMAR
+# CONFIRMAR SUGERENCIA
 # ==========================================
 @bot.message_handler(func=lambda m: m.text and autorizado(m) and m.chat.id in pendientes)
 def confirmar(message):
@@ -240,6 +238,44 @@ def flujo_nuevo(message):
         del estado_nuevo[chat_id]
 
 # ==========================================
+# VER TODO
+# ==========================================
+@bot.message_handler(func=lambda m: m.text and autorizado(m) and m.text.lower() == "ver todo")
+def ver_todo(message):
+    data = sheet_stock.get_all_records()
+
+    if not data:
+        bot.reply_to(message, "📭 Inventario vacío")
+        return
+
+    mensaje = "📦 INVENTARIO:\n\n"
+
+    for fila in data:
+        producto = fila.get("Producto", "")
+        stock = safe_int(fila.get("Stock_Actual", 0))
+        ubicacion = f"{fila.get('Nivel','')},{fila.get('Pasillo','')},{fila.get('Lado','')},{fila.get('Seccion','')}"
+
+        mensaje += f"{producto} → {stock} | {ubicacion}\n"
+
+    bot.reply_to(message, mensaje)
+
+# ==========================================
+# ELIMINAR PRODUCTO
+# ==========================================
+@bot.message_handler(func=lambda m: m.text and autorizado(m) and m.text.lower().startswith("eliminar"))
+def eliminar_producto(message):
+    nombre = message.text.replace("eliminar", "").strip().lower()
+    data = sheet_stock.get_all_records()
+
+    for i, fila in enumerate(data, start=2):
+        if nombre == str(fila.get("Producto", "")).lower():
+            sheet_stock.delete_rows(i)
+            bot.reply_to(message, f"🗑️ Eliminado: {fila.get('Producto')}")
+            return
+
+    bot.reply_to(message, "❌ Producto no encontrado")
+
+# ==========================================
 # CONSULTAR
 # ==========================================
 @bot.message_handler(func=lambda m: m.text and autorizado(m) and m.text.lower().startswith("cantidad"))
@@ -287,7 +323,29 @@ def registrar_movimiento(message, producto, accion, cantidad):
     bot.reply_to(message, f"✅ {producto} {cantidad_real}")
 
 # ==========================================
-# START (FIX 409 + THREAD SEGURO)
+# BUSQUEDA FLEXIBLE (AL FINAL)
+# ==========================================
+@bot.message_handler(func=lambda m: m.text and autorizado(m))
+def busqueda_general(message):
+    texto = message.text.lower().strip()
+
+    if texto.startswith(("entrada", "salida", "cantidad", "nuevo", "eliminar", "ver")):
+        return
+
+    data = sheet_stock.get_all_records()
+    resultados = []
+
+    for fila in data:
+        nombre = str(fila.get("Producto", "")).lower()
+        if texto in nombre:
+            stock = safe_int(fila.get("Stock_Actual", 0))
+            resultados.append(f"{fila.get('Producto')} → {stock}")
+
+    if resultados:
+        bot.reply_to(message, "🔍 Resultados:\n\n" + "\n".join(resultados))
+
+# ==========================================
+# START
 # ==========================================
 threading.Thread(target=enviar_reporte_diario, daemon=True).start()
 
