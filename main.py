@@ -4,23 +4,21 @@ from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 import os
 import sys
-import traceback
 import warnings
 import difflib
-import re
 import time
 import json
+import threading
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-# 🔐 VARIABLES DE ENTORNO
+# 🔐 VARIABLES
 TOKEN = os.getenv("TOKEN")
-
 CHATS_PERMITIDOS = [6249114480]
 
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
-# 🔐 CREDENCIALES DESDE RAILWAY
+# 🔐 GOOGLE CREDS
 try:
     credenciales_json = os.getenv("GOOGLE_CREDS")
     creds_dict = json.loads(credenciales_json)
@@ -40,7 +38,7 @@ except Exception as e:
 bot = telebot.TeleBot(TOKEN)
 
 # ==========================================
-# FUNCIONES AUXILIARES
+# FUNCIONES AUX
 # ==========================================
 def autorizado(message):
     return message.from_user.id in CHATS_PERMITIDOS
@@ -59,7 +57,55 @@ def sugerir_producto(nombre, lista):
     return matches[0] if matches else None
 
 # ==========================================
-# CONFIRMAR SUGERENCIA
+# REPORTE DIARIO
+# ==========================================
+def enviar_reporte_diario():
+    while True:
+        ahora = datetime.now().strftime("%H:%M")
+
+        if ahora == "08:00":
+            try:
+                data = sheet_stock.get_all_records()
+
+                bajos = []
+                iguales = []
+                cercanos = []
+
+                for fila in data:
+                    producto = fila.get("Producto", "")
+                    stock = safe_int(fila.get("Stock_Actual", 0))
+                    reorden = safe_int(fila.get("Reorden", 0))
+
+                    if stock < reorden:
+                        bajos.append(f"{producto} ({stock}/{reorden})")
+                    elif stock == reorden:
+                        iguales.append(f"{producto} ({stock}/{reorden})")
+                    elif stock <= reorden + 3:
+                        cercanos.append(f"{producto} ({stock}/{reorden})")
+
+                mensaje = "📊 REPORTE DIARIO INVENTARIO\n\n"
+
+                if bajos:
+                    mensaje += "🔻 Bajo mínimo:\n" + "\n".join(bajos) + "\n\n"
+                if iguales:
+                    mensaje += "⚠️ En mínimo:\n" + "\n".join(iguales) + "\n\n"
+                if cercanos:
+                    mensaje += "🔜 Próximos a reorden:\n" + "\n".join(cercanos) + "\n\n"
+
+                if not (bajos or iguales or cercanos):
+                    mensaje += "✅ Todo el inventario está en buen estado"
+
+                bot.send_message(CHATS_PERMITIDOS[0], mensaje)
+
+            except Exception as e:
+                print(f"Error en reporte diario: {e}")
+
+            time.sleep(60)
+
+        time.sleep(30)
+
+# ==========================================
+# CONFIRMAR
 # ==========================================
 @bot.message_handler(func=lambda m: m.text and autorizado(m) and m.chat.id in pendientes)
 def confirmar(message):
@@ -78,7 +124,7 @@ def confirmar(message):
     registrar_movimiento(message, datos["producto"], datos["accion"], datos["cantidad"])
 
 # ==========================================
-# NUEVO PRODUCTO GUIADO
+# NUEVO PRODUCTO
 # ==========================================
 @bot.message_handler(func=lambda m: m.text and autorizado(m) and m.text.lower() == "nuevo")
 def iniciar_nuevo(message):
@@ -110,7 +156,7 @@ def flujo_nuevo(message):
 
         estado["stock"] = int(texto)
         estado["paso"] = "nivel"
-        bot.reply_to(message, "🏢 Nivel (ej: 1):")
+        bot.reply_to(message, "🏢 Nivel:")
         return
 
     if estado["paso"] == "nivel":
@@ -120,7 +166,7 @@ def flujo_nuevo(message):
 
         estado["nivel"] = f"N-{texto}"
         estado["paso"] = "pasillo"
-        bot.reply_to(message, "🚶 Pasillo (ej: 1):")
+        bot.reply_to(message, "🚶 Pasillo:")
         return
 
     if estado["paso"] == "pasillo":
@@ -175,15 +221,9 @@ def flujo_nuevo(message):
         nueva_fila_index = len(sheet_stock.get_all_records()) + 2
 
         sheet_stock.append_row([
-            estado["producto"],
-            "",
-            estado["nivel"],
-            estado["pasillo"],
-            estado["lado"],
-            estado["seccion"],
-            estado["reorden"],
-            estado["email"],
-            estado["estado"]
+            estado["producto"], "", estado["nivel"], estado["pasillo"],
+            estado["lado"], estado["seccion"], estado["reorden"],
+            estado["email"], estado["estado"]
         ])
 
         formula = f"=SUMAR.SI(Movimientos!B:B,A{nueva_fila_index},Movimientos!D:D)"
@@ -192,49 +232,29 @@ def flujo_nuevo(message):
         if estado["stock"] > 0:
             sheet_mov.append_row([
                 datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-                estado["producto"],
-                "",
-                estado["stock"],
+                estado["producto"], "", estado["stock"],
                 message.from_user.first_name
             ])
 
-        bot.reply_to(
-            message,
-            f"✅ Producto creado\n📦 {estado['producto']}\n📍 {estado['nivel']},{estado['pasillo']},{estado['lado']},{estado['seccion']}"
-        )
-
+        bot.reply_to(message, f"✅ Producto creado\n📦 {estado['producto']}")
         del estado_nuevo[chat_id]
 
 # ==========================================
-# CONSULTAR STOCK
+# CONSULTAR
 # ==========================================
 @bot.message_handler(func=lambda m: m.text and autorizado(m) and m.text.lower().startswith("cantidad"))
 def consultar(message):
     nombre_input = message.text.replace("cantidad", "").strip().lower()
     data = sheet_stock.get_all_records()
 
-    match = None
     for fila in data:
         if nombre_input == str(fila.get('Producto','')).lower():
-            match = fila
-            break
+            stock = safe_int(fila.get('Stock_Actual', 0))
+            ubicacion = f"{fila.get('Nivel','')},{fila.get('Pasillo','')},{fila.get('Lado','')},{fila.get('Seccion','')}"
+            bot.reply_to(message, f"📦 {fila.get('Producto')}\n🔢 {stock}\n📍 {ubicacion}")
+            return
 
-    if match:
-        ubicacion = f"{match.get('Nivel','')},{match.get('Pasillo','')},{match.get('Lado','')},{match.get('Seccion','')}"
-        stock = safe_int(match.get('Stock_Actual', 0))
-
-        bot.reply_to(
-            message,
-            f"📦 {match.get('Producto')}\n🔢 Stock: {stock}\n📍 {ubicacion}"
-        )
-    else:
-        productos = [str(f.get('Producto','')).lower() for f in data]
-        sugerido = sugerir_producto(nombre_input, productos)
-
-        if sugerido:
-            bot.reply_to(message, f"❓ ¿Quisiste decir {sugerido}?")
-        else:
-            bot.reply_to(message, "❌ No encontrado")
+    bot.reply_to(message, "❌ No encontrado")
 
 # ==========================================
 # MOVIMIENTOS
@@ -247,40 +267,31 @@ def movimiento(message):
     producto = " ".join(partes[1:-1]).lower()
 
     data = sheet_stock.get_all_records()
-    productos = [str(f.get('Producto','')).lower() for f in data]
 
     for fila in data:
         if producto == str(fila.get('Producto','')).lower():
             registrar_movimiento(message, producto, accion, cantidad)
             return
 
-    sugerido = sugerir_producto(producto, productos)
-
-    if sugerido:
-        pendientes[message.chat.id] = {
-            "producto": sugerido,
-            "accion": accion,
-            "cantidad": cantidad
-        }
-        bot.reply_to(message, f"❓ ¿Quisiste decir {sugerido}? (si/no)")
-    else:
-        bot.reply_to(message, "❌ Producto no existe")
+    bot.reply_to(message, "❌ Producto no existe")
 
 def registrar_movimiento(message, producto, accion, cantidad):
     cantidad_real = cantidad if accion == "ENTRADA" else -cantidad
 
     sheet_mov.append_row([
         datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-        producto,
-        "",
-        cantidad_real,
+        producto, "", cantidad_real,
         message.from_user.first_name
     ])
 
     bot.reply_to(message, f"✅ {producto} {cantidad_real}")
 
 # ==========================================
-# START BOT
+# START
 # ==========================================
+threading.Thread(target=enviar_reporte_diario).start()
+
+bot.remove_webhook()
+time.sleep(1)
 print("🚀 BOT LISTO")
 bot.infinity_polling()
