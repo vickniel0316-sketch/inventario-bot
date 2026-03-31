@@ -287,11 +287,12 @@ def registrar_movimiento(message, producto, accion, cantidad):
     bot.reply_to(message, f"✅ {producto} {cantidad_real}")
 
 # ==========================================
-# START
+# START (FIX 409 + THREAD SEGURO)
 # ==========================================
-threading.Thread(target=enviar_reporte_diario).start()
+threading.Thread(target=enviar_reporte_diario, daemon=True).start()
 
 bot.remove_webhook()
-time.sleep(1)
+time.sleep(2)
+
 print("🚀 BOT LISTO")
-bot.infinity_polling()
+bot.infinity_polling(none_stop=True, interval=0, timeout=20)
