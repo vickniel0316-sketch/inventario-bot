@@ -7,7 +7,7 @@ import sys
 import difflib
 import time
 
-TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = os.getenv("TOKEN")
 CHATS_PERMITIDOS = [6249114480]
 
 # =========================
