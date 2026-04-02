@@ -235,22 +235,27 @@ def movimiento(message):
     bot.reply_to(message, "❌ Producto no encontrado")
 
 # =========================
-# VER TODO
+# VER TODO (FIX)
 # =========================
 @bot.message_handler(func=lambda m: m.text and autorizado(m) and "ver todo" in m.text.lower())
 def ver_todo(message):
-    data = sheet_stock.get_all_records()
+    productos = sheet_stock.col_values(1)
+    stocks = sheet_stock.col_values(2)
+    pedidos = sheet_stock.col_values(13)
 
-    if not data:
+    if len(productos) <= 1:
         bot.reply_to(message, "📭 No hay productos.")
         return
 
     respuesta = "📦 INVENTARIO:\n\n"
 
-    for fila in data:
-        producto = fila.get("Producto", "")
-        stock = fila.get("Stock", 0)
-        pedido = fila.get("Pedido", "")
+    for i in range(1, len(productos)):
+        producto = productos[i]
+        stock = stocks[i] if i < len(stocks) else "0"
+        pedido = pedidos[i] if i < len(pedidos) else ""
+
+        if not stock:
+            stock = "0"
 
         respuesta += f"📦 {producto}\n"
         respuesta += f"🔢 Stock: {stock}\n"
@@ -261,6 +266,48 @@ def ver_todo(message):
         respuesta += "\n"
 
     bot.reply_to(message, respuesta)
+
+# =========================
+# BUSCAR PRODUCTO
+# =========================
+@bot.message_handler(func=lambda m: m.text and autorizado(m) and m.text.lower().startswith("buscar"))
+def buscar_producto(message):
+    partes = message.text.split()
+
+    if len(partes) < 2:
+        bot.reply_to(message, "❌ Usa: buscar nombre_producto")
+        return
+
+    busqueda = " ".join(partes[1:]).lower()
+    data = sheet_stock.get_all_records()
+
+    encontrados = []
+
+    for fila in data:
+        producto = str(fila.get("Producto", "")).lower()
+
+        if busqueda in producto:
+            stock = fila.get("Stock", 0)
+            nivel = fila.get("Nivel", "")
+            pasillo = fila.get("Pasillo", "")
+            lado = fila.get("Lado", "")
+            seccion = fila.get("Seccion", "")
+            pedido = fila.get("Pedido", "")
+
+            texto = f"📦 {producto}\n"
+            texto += f"🔢 Stock: {stock}\n"
+            texto += f"📍 Ubicación: {nivel} | {pasillo} | {lado} | {seccion}\n"
+
+            if pedido:
+                texto += f"📦 Pedido: {pedido} cajas\n"
+
+            encontrados.append(texto)
+
+    if not encontrados:
+        bot.reply_to(message, "❌ No encontrado")
+        return
+
+    bot.reply_to(message, "\n".join(encontrados))
 
 # =========================
 # MODIFICAR
@@ -280,12 +327,10 @@ def iniciar_editar(message):
         if producto == str(fila.get("Producto", "")).lower():
             estado_editar[message.chat.id] = {
                 "fila": i + 2,
-                "producto": producto,
                 "paso": "campo"
             }
 
             bot.reply_to(message,
-                f"✏️ Editando: {producto}\n\n"
                 "1️⃣ Stock\n"
                 "2️⃣ Reorden\n"
                 "3️⃣ Tiempo entrega\n"
@@ -310,7 +355,7 @@ def flujo_editar(message):
 
         estado["columna"] = opciones[texto]
         estado["paso"] = "valor"
-        bot.reply_to(message, "✏️ Nuevo valor:")
+        bot.reply_to(message, "Nuevo valor:")
         return
 
     if estado["paso"] == "valor":
@@ -320,7 +365,7 @@ def flujo_editar(message):
 
         sheet_stock.update_cell(estado["fila"], estado["columna"], int(texto))
 
-        bot.reply_to(message, "✅ Producto actualizado")
+        bot.reply_to(message, "✅ Actualizado")
         del estado_editar[message.chat.id]
 
 # =========================
@@ -339,14 +384,10 @@ def iniciar_eliminar(message):
 
     for i, fila in enumerate(data):
         if producto == str(fila.get("Producto", "")).lower():
-            estado_eliminar[message.chat.id] = {
-                "fila": i + 2,
-                "producto": producto
-            }
+            estado_eliminar[message.chat.id] = {"fila": i + 2}
 
             bot.reply_to(message,
-                f"⚠️ Vas a eliminar:\n📦 {producto}\n\n"
-                "Escribe SI para confirmar o NO para cancelar"
+                f"⚠️ Eliminar {producto}?\nEscribe SI para confirmar"
             )
             return
 
@@ -354,14 +395,12 @@ def iniciar_eliminar(message):
 
 @bot.message_handler(func=lambda m: m.text and autorizado(m) and m.chat.id in estado_eliminar)
 def confirmar_eliminar(message):
-    texto = message.text.strip().lower()
-    estado = estado_eliminar[message.chat.id]
-
-    if texto == "si":
-        sheet_stock.delete_rows(estado["fila"])
-        bot.reply_to(message, f"🗑️ Eliminado: {estado['producto']}")
+    if message.text.lower() == "si":
+        fila = estado_eliminar[message.chat.id]["fila"]
+        sheet_stock.delete_rows(fila)
+        bot.reply_to(message, "🗑️ Eliminado")
     else:
-        bot.reply_to(message, "❌ Eliminación cancelada")
+        bot.reply_to(message, "Cancelado")
 
     del estado_eliminar[message.chat.id]
 
