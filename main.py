@@ -6,6 +6,8 @@ import os
 import json
 import sys
 import time
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # =========================
 # VARIABLES DE ENTORNO
@@ -48,6 +50,23 @@ CHATS_PERMITIDOS = [6249114480]
 estado_nuevo = {}
 
 # =========================
+# SERVIDOR WEB (ANTI-APAGADO RAILWAY)
+# =========================
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot activo")
+
+def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), Handler)
+    print(f"🌐 Web corriendo en puerto {port}")
+    server.serve_forever()
+
+threading.Thread(target=run_web, daemon=True).start()
+
+# =========================
 # SEGURIDAD
 # =========================
 def autorizado(message):
@@ -75,7 +94,6 @@ def flujo_nuevo(message):
 
     data = sheet_stock.get_all_records()
 
-    # Producto
     if estado["paso"] == "producto":
         for fila in data:
             if texto.lower() == str(fila.get('Producto','')).lower():
@@ -86,7 +104,6 @@ def flujo_nuevo(message):
         bot.reply_to(message, "🔢 Stock inicial:")
         return
 
-    # Stock
     if estado["paso"] == "stock":
         if not texto.isdigit():
             bot.reply_to(message, "❌ Número inválido")
@@ -96,21 +113,18 @@ def flujo_nuevo(message):
         bot.reply_to(message, "🏢 Nivel:")
         return
 
-    # Nivel
     if estado["paso"] == "nivel":
         estado["nivel"] = f"N-{texto}"
         estado["paso"] = "pasillo"
         bot.reply_to(message, "🚶 Pasillo:")
         return
 
-    # Pasillo
     if estado["paso"] == "pasillo":
         estado["pasillo"] = f"P-{texto}"
         estado["paso"] = "lado"
         bot.reply_to(message, "↔️ Lado (A/B):")
         return
 
-    # Lado
     if estado["paso"] == "lado":
         if texto.upper() not in ["A","B"]:
             bot.reply_to(message, "❌ Solo A o B")
@@ -120,14 +134,12 @@ def flujo_nuevo(message):
         bot.reply_to(message, "📍 Sección:")
         return
 
-    # Sección
     if estado["paso"] == "seccion":
         estado["seccion"] = texto
         estado["paso"] = "reorden"
         bot.reply_to(message, "⚠️ Reorden:")
         return
 
-    # Reorden
     if estado["paso"] == "reorden":
         if not texto.isdigit():
             bot.reply_to(message, "❌ Solo número")
@@ -137,7 +149,6 @@ def flujo_nuevo(message):
         bot.reply_to(message, "📦 Unidades por caja:")
         return
 
-    # Caja
     if estado["paso"] == "caja":
         if not texto.isdigit():
             bot.reply_to(message, "❌ Solo número")
@@ -147,7 +158,6 @@ def flujo_nuevo(message):
         bot.reply_to(message, "🚚 Tiempo de entrega (días):")
         return
 
-    # Tiempo
     if estado["paso"] == "tiempo":
         if not texto.isdigit():
             bot.reply_to(message, "❌ Solo número")
@@ -157,22 +167,18 @@ def flujo_nuevo(message):
         bot.reply_to(message, "📧 Email:")
         return
 
-    # Email
     if estado["paso"] == "email":
         estado["email"] = texto
         estado["paso"] = "estado"
         bot.reply_to(message, "📌 Estado:")
         return
 
-    # Estado FINAL
     if estado["paso"] == "estado":
         estado["estado"] = texto
 
-        nueva_fila_index = len(sheet_stock.get_all_records()) + 2
-
         sheet_stock.append_row([
-            estado["producto"],   # A
-            "",                   # B (Stock fórmula)
+            estado["producto"],
+            "",
             estado["nivel"],
             estado["pasillo"],
             estado["lado"],
@@ -180,9 +186,9 @@ def flujo_nuevo(message):
             estado["reorden"],
             estado["email"],
             estado["estado"],
-            "",                   # J Consumo (ARRAYFORMULA)
-            estado["tiempo"],     # K
-            estado["caja"]        # L
+            "",
+            estado["tiempo"],
+            estado["caja"]
         ])
 
         if estado["stock"] > 0:
@@ -195,7 +201,6 @@ def flujo_nuevo(message):
             ])
 
         bot.reply_to(message, f"✅ Producto creado:\n📦 {estado['producto']}")
-
         del estado_nuevo[chat_id]
 
 # =========================
