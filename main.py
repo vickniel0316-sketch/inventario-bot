@@ -10,7 +10,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # =========================
-# VARIABLES DE ENTORNO
+# VARIABLES
 # =========================
 TOKEN = os.getenv("TOKEN")
 GOOGLE_CREDS = os.getenv("GOOGLE_CREDS")
@@ -22,7 +22,7 @@ if not GOOGLE_CREDS:
     raise Exception("❌ Falta GOOGLE_CREDS")
 
 # =========================
-# CONEXIÓN GOOGLE SHEETS
+# GOOGLE SHEETS
 # =========================
 try:
     creds_dict = json.loads(GOOGLE_CREDS)
@@ -48,9 +48,11 @@ bot = telebot.TeleBot(TOKEN)
 CHATS_PERMITIDOS = [6249114480]
 
 estado_nuevo = {}
+estado_editar = {}
+estado_eliminar = {}
 
 # =========================
-# SERVIDOR WEB (ANTI-APAGADO RAILWAY)
+# SERVIDOR WEB (RAILWAY)
 # =========================
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -67,7 +69,7 @@ def run_web():
 threading.Thread(target=run_web, daemon=True).start()
 
 # =========================
-# SEGURIDAD
+# UTILIDADES
 # =========================
 def autorizado(message):
     return message.from_user.id in CHATS_PERMITIDOS
@@ -233,9 +235,142 @@ def movimiento(message):
     bot.reply_to(message, "❌ Producto no encontrado")
 
 # =========================
+# VER TODO
+# =========================
+@bot.message_handler(func=lambda m: m.text and autorizado(m) and "ver todo" in m.text.lower())
+def ver_todo(message):
+    data = sheet_stock.get_all_records()
+
+    if not data:
+        bot.reply_to(message, "📭 No hay productos.")
+        return
+
+    respuesta = "📦 INVENTARIO:\n\n"
+
+    for fila in data:
+        producto = fila.get("Producto", "")
+        stock = fila.get("Stock", 0)
+        pedido = fila.get("Pedido", "")
+
+        respuesta += f"📦 {producto}\n"
+        respuesta += f"🔢 Stock: {stock}\n"
+
+        if pedido:
+            respuesta += f"📦 Pedido: {pedido} cajas\n"
+
+        respuesta += "\n"
+
+    bot.reply_to(message, respuesta)
+
+# =========================
+# MODIFICAR
+# =========================
+@bot.message_handler(func=lambda m: m.text and autorizado(m) and m.text.lower().startswith("modificar"))
+def iniciar_editar(message):
+    partes = message.text.split()
+
+    if len(partes) < 2:
+        bot.reply_to(message, "❌ Usa: modificar nombre_producto")
+        return
+
+    producto = " ".join(partes[1:]).lower()
+    data = sheet_stock.get_all_records()
+
+    for i, fila in enumerate(data):
+        if producto == str(fila.get("Producto", "")).lower():
+            estado_editar[message.chat.id] = {
+                "fila": i + 2,
+                "producto": producto,
+                "paso": "campo"
+            }
+
+            bot.reply_to(message,
+                f"✏️ Editando: {producto}\n\n"
+                "1️⃣ Stock\n"
+                "2️⃣ Reorden\n"
+                "3️⃣ Tiempo entrega\n"
+                "4️⃣ Unidades por caja\n\n"
+                "Escribe el número:"
+            )
+            return
+
+    bot.reply_to(message, "❌ Producto no encontrado")
+
+@bot.message_handler(func=lambda m: m.text and autorizado(m) and m.chat.id in estado_editar)
+def flujo_editar(message):
+    estado = estado_editar[message.chat.id]
+    texto = message.text.strip()
+
+    if estado["paso"] == "campo":
+        opciones = {"1": 2, "2": 7, "3": 11, "4": 12}
+
+        if texto not in opciones:
+            bot.reply_to(message, "❌ Opción inválida")
+            return
+
+        estado["columna"] = opciones[texto]
+        estado["paso"] = "valor"
+        bot.reply_to(message, "✏️ Nuevo valor:")
+        return
+
+    if estado["paso"] == "valor":
+        if not texto.isdigit():
+            bot.reply_to(message, "❌ Solo números")
+            return
+
+        sheet_stock.update_cell(estado["fila"], estado["columna"], int(texto))
+
+        bot.reply_to(message, "✅ Producto actualizado")
+        del estado_editar[message.chat.id]
+
+# =========================
+# ELIMINAR
+# =========================
+@bot.message_handler(func=lambda m: m.text and autorizado(m) and m.text.lower().startswith("eliminar"))
+def iniciar_eliminar(message):
+    partes = message.text.split()
+
+    if len(partes) < 2:
+        bot.reply_to(message, "❌ Usa: eliminar nombre_producto")
+        return
+
+    producto = " ".join(partes[1:]).lower()
+    data = sheet_stock.get_all_records()
+
+    for i, fila in enumerate(data):
+        if producto == str(fila.get("Producto", "")).lower():
+            estado_eliminar[message.chat.id] = {
+                "fila": i + 2,
+                "producto": producto
+            }
+
+            bot.reply_to(message,
+                f"⚠️ Vas a eliminar:\n📦 {producto}\n\n"
+                "Escribe SI para confirmar o NO para cancelar"
+            )
+            return
+
+    bot.reply_to(message, "❌ Producto no encontrado")
+
+@bot.message_handler(func=lambda m: m.text and autorizado(m) and m.chat.id in estado_eliminar)
+def confirmar_eliminar(message):
+    texto = message.text.strip().lower()
+    estado = estado_eliminar[message.chat.id]
+
+    if texto == "si":
+        sheet_stock.delete_rows(estado["fila"])
+        bot.reply_to(message, f"🗑️ Eliminado: {estado['producto']}")
+    else:
+        bot.reply_to(message, "❌ Eliminación cancelada")
+
+    del estado_eliminar[message.chat.id]
+
+# =========================
 # START
 # =========================
 print("🚀 BOT LISTO")
+
+bot.remove_webhook()
 
 while True:
     try:
