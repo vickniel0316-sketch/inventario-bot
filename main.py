@@ -3,30 +3,32 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 import os
+import json
 import sys
-import difflib
 import time
 
+# =========================
+# VARIABLES DE ENTORNO
+# =========================
 TOKEN = os.getenv("TOKEN")
-CHATS_PERMITIDOS = [6249114480]
+GOOGLE_CREDS = os.getenv("GOOGLE_CREDS")
+
+if not TOKEN:
+    raise Exception("❌ Falta TOKEN")
+
+if not GOOGLE_CREDS:
+    raise Exception("❌ Falta GOOGLE_CREDS")
 
 # =========================
 # CONEXIÓN GOOGLE SHEETS
 # =========================
 try:
-    creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
-    if creds_json:
-        import json
-        creds_dict = json.loads(creds_json)
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, [
-            "https://spreadsheets.google.com/feeds",
-            "https://www.googleapis.com/auth/drive"
-        ])
-    else:
-        creds = ServiceAccountCredentials.from_json_keyfile_name("credenciales.json", [
-            "https://spreadsheets.google.com/feeds",
-            "https://www.googleapis.com/auth/drive"
-        ])
+    creds_dict = json.loads(GOOGLE_CREDS)
+
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, [
+        "https://spreadsheets.google.com/feeds",
+        "https://www.googleapis.com/auth/drive"
+    ])
 
     client = gspread.authorize(creds)
     spreadsheet = client.open("inventario_vickniel01")
@@ -34,14 +36,19 @@ try:
     sheet_mov = spreadsheet.worksheet("Movimientos")
 
     print("✅ Conexión exitosa con Google Sheets.")
+
 except Exception as e:
     print(f"❌ ERROR DE CONEXIÓN: {e}")
     sys.exit()
 
 bot = telebot.TeleBot(TOKEN)
 
+CHATS_PERMITIDOS = [6249114480]
+
+estado_nuevo = {}
+
 # =========================
-# UTILIDADES
+# SEGURIDAD
 # =========================
 def autorizado(message):
     return message.from_user.id in CHATS_PERMITIDOS
@@ -51,8 +58,6 @@ def safe_int(valor):
         return int(valor)
     except:
         return 0
-
-estado_nuevo = {}
 
 # =========================
 # NUEVO PRODUCTO
@@ -132,7 +137,7 @@ def flujo_nuevo(message):
         bot.reply_to(message, "📦 Unidades por caja:")
         return
 
-    # NUEVO: Caja
+    # Caja
     if estado["paso"] == "caja":
         if not texto.isdigit():
             bot.reply_to(message, "❌ Solo número")
@@ -142,7 +147,7 @@ def flujo_nuevo(message):
         bot.reply_to(message, "🚚 Tiempo de entrega (días):")
         return
 
-    # NUEVO: Tiempo
+    # Tiempo
     if estado["paso"] == "tiempo":
         if not texto.isdigit():
             bot.reply_to(message, "❌ Solo número")
@@ -166,8 +171,8 @@ def flujo_nuevo(message):
         nueva_fila_index = len(sheet_stock.get_all_records()) + 2
 
         sheet_stock.append_row([
-            estado["producto"],
-            "",
+            estado["producto"],   # A
+            "",                   # B (Stock fórmula)
             estado["nivel"],
             estado["pasillo"],
             estado["lado"],
@@ -175,13 +180,10 @@ def flujo_nuevo(message):
             estado["reorden"],
             estado["email"],
             estado["estado"],
-            "",  # Consumo (lo calcula la hoja)
-            estado["tiempo"],
-            estado["caja"]
+            "",                   # J Consumo (ARRAYFORMULA)
+            estado["tiempo"],     # K
+            estado["caja"]        # L
         ])
-
-        formula = f"=SUMAR.SI(Movimientos!B:B,A{nueva_fila_index},Movimientos!D:D)"
-        sheet_stock.update_cell(nueva_fila_index, 2, formula)
 
         if estado["stock"] > 0:
             sheet_mov.append_row([
