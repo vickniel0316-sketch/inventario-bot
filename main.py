@@ -3,7 +3,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 from zoneinfo import ZoneInfo
-import os, json, sys, time, threading, math
+import os, json, time, threading, math
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # =========================
@@ -39,21 +39,20 @@ bot = telebot.TeleBot(TOKEN)
 # =========================
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        print("🌐 Ping recibido")
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"OK")
 
 def web():
     port = int(os.environ.get("PORT", 8080))
-    print("🌐 Web corriendo en puerto", port)
     HTTPServer(("0.0.0.0", port), Handler).serve_forever()
+
+threading.Thread(target=web, daemon=True).start()
 
 # =========================
 # UTILS
 # =========================
 def ok(m): return m.from_user.id == CHAT_ID
-
 def num(x):
     try: return float(x)
     except: return 0
@@ -91,6 +90,9 @@ def msg_pedidos(lista):
 def pedidos(m):
     bot.reply_to(m, msg_pedidos(calc_pedidos()))
 
+# =========================
+# AUTO
+# =========================
 def auto():
     ultimo=None
     while True:
@@ -104,12 +106,12 @@ def auto():
             ultimo=ahora.date()
         time.sleep(60)
 
+threading.Thread(target=auto, daemon=True).start()
+
 # =========================
-# NUEVO
+# NUEVO (CON EMAIL + FORMULAS)
 # =========================
 estado = {}
-estado_busqueda = {}
-resultados_busqueda = {}
 
 @bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower()=="nuevo")
 def nuevo(m):
@@ -124,7 +126,7 @@ def flujo(m):
     if e["p"]=="nombre":
         e["nombre"]=t
         e["p"]="stock"
-        bot.reply_to(m,"Stock:")
+        bot.reply_to(m,"Stock inicial:")
         return
 
     if e["p"]=="stock":
@@ -153,6 +155,12 @@ def flujo(m):
 
     if e["p"]=="sec":
         e["sec"]=t
+        e["p"]="email"
+        bot.reply_to(m,"Email responsable:")
+        return
+
+    if e["p"]=="email":
+        e["email"]=t
         e["p"]="caja"
         bot.reply_to(m,"Unidades por caja:")
         return
@@ -166,9 +174,20 @@ def flujo(m):
     if e["p"]=="tiempo":
         e["tiempo"]=num(t)
 
+        fila = len(stock.get_all_values()) + 1
+
         stock.append_row([
-            e["nombre"],"",e["nivel"],e["pasillo"],e["lado"],e["sec"],
-            "", "", "", "", e["tiempo"], e["caja"]
+            e["nombre"],
+            f'=SUMIF(Movimientos!B:B,A{fila},Movimientos!D:D)',  # Stock
+            e["nivel"],
+            e["pasillo"],
+            e["lado"],
+            e["sec"],
+            e["email"],
+            "",
+            f'=SUMIF(Movimientos!B:B,A{fila},Movimientos!D:D)/7', # Consumo
+            e["tiempo"],
+            e["caja"]
         ])
 
         if e["stock"]>0:
@@ -220,81 +239,20 @@ def ver(m):
     bot.reply_to(m,txt)
 
 # =========================
-# BUSCAR PRO
+# BUSCAR
 # =========================
 @bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower().startswith("buscar"))
 def buscar(m):
-    partes = m.text.strip().split(maxsplit=1)
-
-    if len(partes) == 1:
-        estado_busqueda[m.chat.id] = True
-        bot.reply_to(m, "¿Qué producto buscas?")
-        return
-
-    ejecutar_busqueda(m, partes[1])
-
-@bot.message_handler(func=lambda m: m.chat.id in estado_busqueda and ok(m))
-def buscar_input(m):
-    ejecutar_busqueda(m, m.text)
-    estado_busqueda.pop(m.chat.id, None)
-
-def ejecutar_busqueda(m, texto):
-    b = texto.strip().lower()
-    data = stock.get_all_records()
-
-    resultados = []
+    b=m.text.replace("buscar","").strip().lower()
+    data=stock.get_all_records()
 
     for f in data:
         if b in f.get("Producto","").lower():
-            resultados.append(f)
+            bot.reply_to(m,
+                f"{f['Producto']}\nStock:{f.get('Stock_Actual')}\n{f.get('Nivel')} {f.get('Pasillo')} {f.get('Lado')} {f.get('Seccion')}")
+            return
 
-    if not resultados:
-        bot.reply_to(m, "❌ No encontrado")
-        return
-
-    if len(resultados) == 1:
-        enviar_producto(m, resultados[0])
-        return
-
-    resultados_busqueda[m.chat.id] = resultados
-
-    txt = "🔍 Resultados:\n\n"
-    for i, f in enumerate(resultados[:10], start=1):
-        txt += f"{i}. {f.get('Producto')}\n"
-
-    txt += "\nEscribe el número:"
-
-    bot.reply_to(m, txt)
-
-@bot.message_handler(func=lambda m: m.chat.id in resultados_busqueda and ok(m))
-def elegir_resultado(m):
-    try:
-        idx = int(m.text.strip()) - 1
-        lista = resultados_busqueda[m.chat.id]
-
-        if idx < 0 or idx >= len(lista):
-            raise Exception()
-
-        enviar_producto(m, lista[idx])
-
-    except:
-        bot.reply_to(m, "❌ Número inválido")
-
-    resultados_busqueda.pop(m.chat.id, None)
-
-def enviar_producto(m, f):
-    producto = f.get("Producto", "-")
-    stock_v = f.get("Stock_Actual") or "0"
-
-    nivel = f.get("Nivel") or "-"
-    pasillo = f.get("Pasillo") or f.get("Pasillo ") or "-"
-    lado = f.get("Lado") or "-"
-    seccion = f.get("Seccion") or "-"
-
-    bot.reply_to(m,
-        f"{producto}\nStock: {stock_v}\n"
-        f"Ubicación: {nivel} {pasillo} {lado} {seccion}"
-    )
+    bot.reply_to(m,"❌")
 
 # =========================
 # ELIMINAR
@@ -322,18 +280,13 @@ def conf(m):
 # =========================
 # START
 # =========================
-def start_bot():
-    print("🚀 BOT LISTO")
-    bot.remove_webhook()
-    threading.Thread(target=auto, daemon=True).start()
+print("🚀 BOT LISTO")
 
-    while True:
-        try:
-            bot.polling(none_stop=True)
-        except Exception as e:
-            print(e)
-            time.sleep(5)
+bot.remove_webhook()
 
-if __name__ == "__main__":
-    threading.Thread(target=start_bot, daemon=True).start()
-    web()
+while True:
+    try:
+        bot.polling(none_stop=True)
+    except Exception as e:
+        print(e)
+        time.sleep(5)
