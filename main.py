@@ -178,17 +178,17 @@ def flujo(m):
 
         stock.append_row([
             e["nombre"],
-            f'=SUMIF(Movimientos!B:B,A{fila},Movimientos!D:D)',  # Stock
+            f'=SUMIF(Movimientos!B:B,A{fila},Movimientos!D:D)',
             e["nivel"],
             e["pasillo"],
             e["lado"],
             e["sec"],
             e["email"],
             "",
-            f'=SUMIF(Movimientos!B:B,A{fila},Movimientos!D:D)/7', # Consumo
+            f'=SUMIF(Movimientos!B:B,A{fila},Movimientos!D:D)/7',
             e["tiempo"],
             e["caja"]
-        ])
+        ], value_input_option="USER_ENTERED")  # 🔥 FIX AQUÍ
 
         if e["stock"]>0:
             mov.append_row([
