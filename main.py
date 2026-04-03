@@ -53,6 +53,7 @@ def web():
 # UTILS
 # =========================
 def ok(m): return m.from_user.id == CHAT_ID
+
 def num(x):
     try: return float(x)
     except: return 0
@@ -66,7 +67,7 @@ def calc_pedidos():
 
     for f in data:
         p = f.get("Producto","")
-        s = num(f.get("Stock",0))
+        s = num(f.get("Stock_Actual",0))
         c = num(f.get("Consumo_dia",0))
         t = num(f.get("Tiempo_entrega",0))
         u = num(f.get("Unidades_Caja",1))
@@ -107,6 +108,8 @@ def auto():
 # NUEVO
 # =========================
 estado = {}
+estado_busqueda = {}
+resultados_busqueda = {}
 
 @bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower()=="nuevo")
 def nuevo(m):
@@ -217,20 +220,81 @@ def ver(m):
     bot.reply_to(m,txt)
 
 # =========================
-# BUSCAR
+# BUSCAR PRO
 # =========================
 @bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower().startswith("buscar"))
 def buscar(m):
-    b=m.text.replace("buscar","").strip().lower()
-    data=stock.get_all_records()
+    partes = m.text.strip().split(maxsplit=1)
+
+    if len(partes) == 1:
+        estado_busqueda[m.chat.id] = True
+        bot.reply_to(m, "¿Qué producto buscas?")
+        return
+
+    ejecutar_busqueda(m, partes[1])
+
+@bot.message_handler(func=lambda m: m.chat.id in estado_busqueda and ok(m))
+def buscar_input(m):
+    ejecutar_busqueda(m, m.text)
+    estado_busqueda.pop(m.chat.id, None)
+
+def ejecutar_busqueda(m, texto):
+    b = texto.strip().lower()
+    data = stock.get_all_records()
+
+    resultados = []
 
     for f in data:
         if b in f.get("Producto","").lower():
-            bot.reply_to(m,
-                f"{f['Producto']}\nStock:{f.get('Stock')}\n{f.get('Nivel')} {f.get('Pasillo')} {f.get('Lado')} {f.get('Seccion')}")
-            return
+            resultados.append(f)
 
-    bot.reply_to(m,"❌")
+    if not resultados:
+        bot.reply_to(m, "❌ No encontrado")
+        return
+
+    if len(resultados) == 1:
+        enviar_producto(m, resultados[0])
+        return
+
+    resultados_busqueda[m.chat.id] = resultados
+
+    txt = "🔍 Resultados:\n\n"
+    for i, f in enumerate(resultados[:10], start=1):
+        txt += f"{i}. {f.get('Producto')}\n"
+
+    txt += "\nEscribe el número:"
+
+    bot.reply_to(m, txt)
+
+@bot.message_handler(func=lambda m: m.chat.id in resultados_busqueda and ok(m))
+def elegir_resultado(m):
+    try:
+        idx = int(m.text.strip()) - 1
+        lista = resultados_busqueda[m.chat.id]
+
+        if idx < 0 or idx >= len(lista):
+            raise Exception()
+
+        enviar_producto(m, lista[idx])
+
+    except:
+        bot.reply_to(m, "❌ Número inválido")
+
+    resultados_busqueda.pop(m.chat.id, None)
+
+def enviar_producto(m, f):
+    producto = f.get("Producto", "-")
+    stock_v = f.get("Stock_Actual") or "0"
+
+    nivel = f.get("Nivel") or "-"
+    pasillo = f.get("Pasillo") or f.get("Pasillo ") or "-"
+    lado = f.get("Lado") or "-"
+    seccion = f.get("Seccion") or "-"
+
+    bot.reply_to(m,
+        f"{producto}\nStock: {stock_v}\n"
+        f"Ubicación: {nivel} {pasillo} {lado} {seccion}"
+    )
 
 # =========================
 # ELIMINAR
@@ -256,12 +320,11 @@ def conf(m):
     del elim[m.chat.id]
 
 # =========================
-# START (FIX RAILWAY)
+# START
 # =========================
 def start_bot():
     print("🚀 BOT LISTO")
     bot.remove_webhook()
-
     threading.Thread(target=auto, daemon=True).start()
 
     while True:
