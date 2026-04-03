@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 TOKEN = os.getenv("TOKEN")
 GOOGLE_CREDS = os.getenv("GOOGLE_CREDS")
 CHAT_ID = 6249114480
+MI_EMAIL = "miemail@empresa.com"  # correo para copia de alertas
 
 if not TOKEN or not GOOGLE_CREDS:
     raise Exception("❌ Faltan variables")
@@ -70,12 +71,24 @@ def calc_pedidos():
         c = num(f.get("Consumo_dia",0))
         t = num(f.get("Tiempo_entrega",0))
         u = num(f.get("Unidades_Caja",1))
+        # días de histórico: asumimos si hay consumo calculado
+        dias_historico = 7 if c>0 else 0
 
-        if c == 0 or u == 0: continue
+        if u == 0: continue
 
-        if s <= c*(t+2):
-            cajas = math.ceil((c*15)/u)
-            res.append((p,s,c,t,cajas))
+        stock_necesario = c * (t + 2)
+
+        # Jerarquía de criterios
+        if dias_historico >= 3:
+            # criterio principal: días de cobertura
+            if s <= stock_necesario:
+                cajas = math.ceil(stock_necesario / u)
+                res.append((p,s,c,t,cajas))
+        else:
+            # criterio secundario: mínimo 3 cajas
+            if s <= 3 * u:
+                cajas = math.ceil((3*c if c>0 else 3*u)/u)
+                res.append((p,s,c,t,cajas))
 
     return res
 
@@ -90,9 +103,6 @@ def msg_pedidos(lista):
 def pedidos(m):
     bot.reply_to(m, msg_pedidos(calc_pedidos()))
 
-# =========================
-# AUTO
-# =========================
 def auto():
     ultimo=None
     while True:
@@ -109,7 +119,7 @@ def auto():
 threading.Thread(target=auto, daemon=True).start()
 
 # =========================
-# NUEVO (CON EMAIL + FORMULAS)
+# NUEVO
 # =========================
 estado = {}
 
@@ -126,7 +136,7 @@ def flujo(m):
     if e["p"]=="nombre":
         e["nombre"]=t
         e["p"]="stock"
-        bot.reply_to(m,"Stock inicial:")
+        bot.reply_to(m,"Stock:")
         return
 
     if e["p"]=="stock":
@@ -155,12 +165,6 @@ def flujo(m):
 
     if e["p"]=="sec":
         e["sec"]=t
-        e["p"]="email"
-        bot.reply_to(m,"Email responsable:")
-        return
-
-    if e["p"]=="email":
-        e["email"]=t
         e["p"]="caja"
         bot.reply_to(m,"Unidades por caja:")
         return
@@ -173,22 +177,21 @@ def flujo(m):
 
     if e["p"]=="tiempo":
         e["tiempo"]=num(t)
+        e["p"]="correo"
+        bot.reply_to(m,"Correo del responsable:")
+        return
 
-        fila = len(stock.get_all_values()) + 1
-
-        stock.append_row([
-            e["nombre"],
-            f'=SUMIF(Movimientos!B:B,A{fila},Movimientos!D:D)',
-            e["nivel"],
-            e["pasillo"],
-            e["lado"],
-            e["sec"],
-            e["email"],
-            "",
-            f'=SUMIF(Movimientos!B:B,A{fila},Movimientos!D:D)/7',
-            e["tiempo"],
-            e["caja"]
-        ], value_input_option="USER_ENTERED")  # 🔥 FIX AQUÍ
+    if e["p"]=="correo":
+        e["correo"]=t
+        # Agregar fila en Stock con formulas automáticas
+        fila = [
+            e["nombre"],  # A Producto
+            f'=SUMAR.SI(Movimientos!B:B, A{stock.row_count+1}, Movimientos!D:D)',  # B Stock_Actual
+            "", e["nivel"], e["pasillo"], e["lado"], e["sec"],
+            e["correo"], "", "", "", "",  # C-H según tu hoja
+            f'=SI(A{stock.row_count+1}="","",SUMAR.SI(Movimientos!B:B,A{stock.row_count+1},Movimientos!D:D)/7)'  # Consumo_dia
+        ]
+        stock.append_row(fila)
 
         if e["stock"]>0:
             mov.append_row([
@@ -281,7 +284,6 @@ def conf(m):
 # START
 # =========================
 print("🚀 BOT LISTO")
-
 bot.remove_webhook()
 
 while True:
