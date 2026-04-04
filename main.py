@@ -189,7 +189,8 @@ def flujo(m):
         col_a = stock.col_values(1)
         next_row = len(col_a) + 1
 
-        # DATOS PARA INSERTAR
+        # INSERTAR DATOS MANUALES
+        stock.update(f"A{next_row}", e["nombre"], value_input_option="USER_ENTERED")
         stock.update(f"C{next_row}", e["nivel"], value_input_option="USER_ENTERED")
         stock.update(f"D{next_row}", e["pasillo"], value_input_option="USER_ENTERED")
         stock.update(f"E{next_row}", e["lado"], value_input_option="USER_ENTERED")
@@ -197,14 +198,14 @@ def flujo(m):
         stock.update(f"G{next_row}", e["correo"], value_input_option="USER_ENTERED")
         stock.update(f"J{next_row}", e["tiempo"], value_input_option="USER_ENTERED")
         stock.update(f"K{next_row}", e["caja"], value_input_option="USER_ENTERED")
-        stock.update(f"A{next_row}", e["nombre"], value_input_option="USER_ENTERED")
 
         # FÓRMULA Stock_Actual (col B)
-        stock.update(f"B{next_row}", f'=SUMAR.SI(Movimientos!B:B, A{next_row}, Movimientos!D:D)',
+        stock.update(f"B{next_row}",
+                     f'=SUMAR.SI(Movimientos!B:B, A{next_row}, Movimientos!D:D)',
                      value_input_option="USER_ENTERED")
 
         # FÓRMULA Consumo_dia (col I)
-        stock.update(f"I{next_row],
+        stock.update(f"I{next_row}",
 f'''=SI.ERROR(
  ABS(SUMAR.SI.CONJUNTO(
    Movimientos!D:D,
