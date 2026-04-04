@@ -208,7 +208,7 @@ def flujo(m):
 @bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower().startswith(("entrada","salida")))
 def movs(m):
     p=m.text.split()
-    tipo=p[0]
+    tipo=p[0].strip().lower()
     cant=num(p[-1])
     prod=" ".join(p[1:-1]).lower()
 
