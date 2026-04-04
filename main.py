@@ -39,7 +39,7 @@ print("✅ Sheets conectado")
 bot = telebot.TeleBot(TOKEN)
 
 # =========================
-# WEB
+# WEB (KEEP ALIVE)
 # =========================
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -74,19 +74,19 @@ def calc_pedidos():
         c = num(f.get("Consumo_dia",0))
         t = num(f.get("Tiempo_entrega",0))
         u = num(f.get("Unidades_Caja",1))
-        dias_historico = 7 if c>0 else 0
-
+        
         if u == 0: continue
 
         stock_necesario = c * (t + 2)
 
-        if dias_historico >= 3:
+        # Lógica de pedido
+        if c > 0:
             if s <= stock_necesario:
                 cajas = math.ceil(stock_necesario / u)
                 res.append((p,s,c,t,cajas))
         else:
             if s <= 3 * u:
-                cajas = math.ceil((3*c if c>0 else 3*u)/u)
+                cajas = 3
                 res.append((p,s,c,t,cajas))
 
     return res
@@ -105,7 +105,7 @@ def pedidos(m):
 def auto():
     ultimo=None
     while True:
-        ahora = datetime.now(ZoneInfo("America/Santo_Domingo"))
+        ahora = datetime.now(ZoneInfo("America/Santo_Domino"))
         if ahora.hour==8 and ultimo!=ahora.date():
             try:
                 bot.send_message(CHAT_ID, msg_pedidos(calc_pedidos()))
@@ -118,14 +118,14 @@ def auto():
 threading.Thread(target=auto, daemon=True).start()
 
 # =========================
-# NUEVO
+# NUEVO PRODUCTO (CORREGIDO)
 # =========================
 estado = {}
 
 @bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower()=="nuevo")
 def nuevo(m):
     estado[m.chat.id]={"p":"nombre"}
-    bot.reply_to(m,"Nombre:")
+    bot.reply_to(m,"Nombre del producto:")
 
 @bot.message_handler(func=lambda m: m.chat.id in estado and ok(m))
 def flujo(m):
@@ -135,7 +135,7 @@ def flujo(m):
     if e["p"] == "nombre":
         e["nombre"] = t
         e["p"] = "stock"
-        bot.reply_to(m,"Stock:")
+        bot.reply_to(m,"Stock inicial:")
         return
 
     if e["p"] == "stock":
@@ -182,51 +182,53 @@ def flujo(m):
 
     if e["p"] == "correo":
         e["correo"] = t
+        bot.send_chat_action(m.chat.id, 'typing')
 
-        # ========================
-        # CREAR FILA VACÍA EN STOCK
-        # ========================
-        stock.append_row([""]*12)  # A-L columnas
-        next_row = len(stock.col_values(1))  # fila recién agregada
+        try:
+            # --- SOLUCIÓN A LAS PETICIONES (QUOTA) ---
+            
+            # 1. Obtenemos el número de la fila donde vamos a escribir (1 sola petición)
+            next_row = len(stock.get_all_values()) + 1
 
-        # INSERTAR DATOS MANUALES
-        stock.update(f"A{next_row}", e["nombre"], value_input_option="USER_ENTERED")
-        stock.update(f"C{next_row}", e["nivel"], value_input_option="USER_ENTERED")
-        stock.update(f"D{next_row}", e["pasillo"], value_input_option="USER_ENTERED")
-        stock.update(f"E{next_row}", e["lado"], value_input_option="USER_ENTERED")
-        stock.update(f"F{next_row}", e["sec"], value_input_option="USER_ENTERED")
-        stock.update(f"G{next_row}", e["correo"], value_input_option="USER_ENTERED")
-        stock.update(f"J{next_row}", e["tiempo"], value_input_option="USER_ENTERED")
-        stock.update(f"K{next_row}", e["caja"], value_input_option="USER_ENTERED")
+            # 2. Preparamos las fórmulas usando la variable next_row
+            formula_stock = f'=SUMAR.SI(Movimientos!B:B, A{next_row}, Movimientos!D:D)'
+            formula_consumo = f'''=SI.ERROR(ABS(SUMAR.SI.CONJUNTO(Movimientos!D:D,Movimientos!B:B,A{next_row},Movimientos!D:D,"<0"))/MAX(1,MAX(SI((Movimientos!B:B=A{next_row})*(Movimientos!D:D<0),Movimientos!A:A))-MIN(SI((Movimientos!B:B=A{next_row})*(Movimientos!D:D<0),Movimientos!A:A))+1),0)'''
 
-        # FÓRMULA Stock_Actual (col B)
-        stock.update(f"B{next_row}",
-                     f'=SUMAR.SI(Movimientos!B:B, A{next_row}, Movimientos!D:D)',
-                     value_input_option="USER_ENTERED")
+            # 3. Construimos la fila completa (Columnas A hasta K)
+            # Esto reduce 10 peticiones de 'update' a solo 1 de 'append'
+            fila_completa = [
+                e["nombre"],    # A: Producto
+                formula_stock,  # B: Stock_Actual
+                e["nivel"],     # C: Nivel
+                e["pasillo"],   # D: Pasillo
+                e["lado"],      # E: Lado
+                e["sec"],       # F: Sección
+                e["correo"],    # G: Correo
+                "",             # H: (Vacia)
+                formula_consumo,# I: Consumo_dia
+                e["tiempo"],    # J: Tiempo_entrega
+                e["caja"]       # K: Unidades_Caja
+            ]
 
-        # FÓRMULA Consumo_dia (col I)
-        stock.update(f"I{next_row}",
-f'''=SI.ERROR(
- ABS(SUMAR.SI.CONJUNTO(
-   Movimientos!D:D,
-   Movimientos!B:B,A{next_row},
-   Movimientos!D:D,"<0"
- )) /
- MAX(1,
-   MAX(SI((Movimientos!B:B=A{next_row})*(Movimientos!D:D<0),Movimientos!A:A)) -
-   MIN(SI((Movimientos!B:B=A{next_row})*(Movimientos!D:D<0),Movimientos!A:A)) + 1
- ),
-0)''', value_input_option="USER_ENTERED")
+            # 4. Registramos el producto (1 petición de escritura)
+            stock.append_row(fila_completa, value_input_option="USER_ENTERED")
 
-        # REGISTRAR STOCK INICIAL SI ES >0
-        if e["stock"] > 0:
-            mov.append_row([
-                datetime.now(ZoneInfo("America/Santo_Domingo")),
-                e["nombre"], "",
-                e["stock"], m.from_user.first_name
-            ])
+            # 5. Si hay stock inicial, registramos el movimiento (1 petición extra)
+            if e["stock"] > 0:
+                mov.append_row([
+                    datetime.now(ZoneInfo("America/Santo_Domingo")).strftime("%Y-%m-%d %H:%M:%S"),
+                    e["nombre"], 
+                    "Carga Inicial", 
+                    e["stock"], 
+                    m.from_user.first_name
+                ])
 
-        bot.reply_to(m, "✅ Creado")
+            bot.reply_to(m, f"✅ ¡Listo! '{e['nombre']}' registrado en la fila {next_row}.")
+
+        except Exception as err:
+            bot.reply_to(m, f"❌ Error de conexión con Google: {err}")
+            print(f"Error: {err}")
+
         del estado[m.chat.id]
 
 # =========================
@@ -235,31 +237,39 @@ f'''=SI.ERROR(
 @bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower().startswith(("entrada","salida")))
 def movs(m):
     p = m.text.split()
+    if len(p) < 3:
+        bot.reply_to(m, "Formato: entrada [producto] [cantidad]")
+        return
+        
     tipo = p[0].strip().lower()
     cant = num(p[-1])
     prod = " ".join(p[1:-1]).lower()
 
+    # Buscamos el producto
     data = stock.get_all_records()
     for f in data:
         if prod == f.get("Producto","").lower():
             mov.append_row([
-                datetime.now(ZoneInfo("America/Santo_Domingo")),
-                prod, "", cant if tipo=="entrada" else -cant, m.from_user.first_name
+                datetime.now(ZoneInfo("America/Santo_Domingo")).strftime("%Y-%m-%d %H:%M:%S"),
+                prod, 
+                "", 
+                cant if tipo=="entrada" else -cant, 
+                m.from_user.first_name
             ])
-            bot.reply_to(m,"✅ OK")
+            bot.reply_to(m, f"✅ {tipo.capitalize()} de {cant} registrada para {prod}.")
             return
 
-    bot.reply_to(m,"❌ No encontrado")
+    bot.reply_to(m, f"❌ El producto '{prod}' no existe en el Stock.")
 
 # =========================
 # START
 # =========================
-print("🚀 BOT LISTO")
+print("🚀 BOT LISTO Y OPTIMIZADO")
 bot.remove_webhook()
 
 while True:
     try:
         bot.polling(none_stop=True)
     except Exception as e:
-        print(e)
+        print(f"Reconectando... {e}")
         time.sleep(5)
