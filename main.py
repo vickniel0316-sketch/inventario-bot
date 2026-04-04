@@ -12,7 +12,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 TOKEN = os.getenv("TOKEN")
 GOOGLE_CREDS = os.getenv("GOOGLE_CREDS")
 CHAT_ID = 6249114480
-MI_EMAIL = "miemail@empresa.com"  # correo para copia de alertas
+MI_EMAIL = "miemail@empresa.com"
 
 if not TOKEN or not GOOGLE_CREDS:
     raise Exception("❌ Faltan variables")
@@ -36,7 +36,7 @@ print("✅ Sheets conectado")
 bot = telebot.TeleBot(TOKEN)
 
 # =========================
-# WEB (RAILWAY)
+# WEB
 # =========================
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -57,66 +57,6 @@ def ok(m): return m.from_user.id == CHAT_ID
 def num(x):
     try: return float(x)
     except: return 0
-
-# =========================
-# PEDIDOS
-# =========================
-def calc_pedidos():
-    data = stock.get_all_records()
-    res = []
-
-    for f in data:
-        p = f.get("Producto","")
-        s = num(f.get("Stock_Actual",0))
-        c = num(f.get("Consumo_dia",0))
-        t = num(f.get("Tiempo_entrega",0))
-        u = num(f.get("Unidades_Caja",1))
-        # días de histórico: asumimos si hay consumo calculado
-        dias_historico = 7 if c>0 else 0
-
-        if u == 0: continue
-
-        stock_necesario = c * (t + 2)
-
-        # Jerarquía de criterios
-        if dias_historico >= 3:
-            # criterio principal: días de cobertura
-            if s <= stock_necesario:
-                cajas = math.ceil(stock_necesario / u)
-                res.append((p,s,c,t,cajas))
-        else:
-            # criterio secundario: mínimo 3 cajas
-            if s <= 3 * u:
-                cajas = math.ceil((3*c if c>0 else 3*u)/u)
-                res.append((p,s,c,t,cajas))
-
-    return res
-
-def msg_pedidos(lista):
-    if not lista: return "✅ Nada que pedir"
-    txt = "📦 PEDIDOS:\n\n"
-    for p,s,c,t,k in lista:
-        txt += f"{p}\nStock:{s} Cons:{c} Ent:{t}\n👉 {k} cajas\n\n"
-    return txt
-
-@bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower()=="pedidos")
-def pedidos(m):
-    bot.reply_to(m, msg_pedidos(calc_pedidos()))
-
-def auto():
-    ultimo=None
-    while True:
-        ahora = datetime.now(ZoneInfo("America/Santo_Domingo"))
-        if ahora.hour==8 and ultimo!=ahora.date():
-            try:
-                bot.send_message(CHAT_ID, msg_pedidos(calc_pedidos()))
-                print("✅ auto enviado")
-            except Exception as e:
-                print(e)
-            ultimo=ahora.date()
-        time.sleep(60)
-
-threading.Thread(target=auto, daemon=True).start()
 
 # =========================
 # NUEVO
@@ -183,20 +123,35 @@ def flujo(m):
 
     if e["p"]=="correo":
         e["correo"]=t
-        # Agregar fila en Stock con formulas automáticas
+
+        # ✅ fila correcta
+        next_row = len(stock.get_all_values()) + 1
+
         fila = [
-            e["nombre"],  # A Producto
-            f'=SUMAR.SI(Movimientos!B:B, A{stock.row_count+1}, Movimientos!D:D)',  # B Stock_Actual
+            e["nombre"],
+            f'=SUMAR.SI(Movimientos!B:B, A{next_row}, Movimientos!D:D)',
             "", e["nivel"], e["pasillo"], e["lado"], e["sec"],
-            e["correo"], "", "", "", "",  # C-H según tu hoja
-            f'=SI(A{stock.row_count+1}="","",SUMAR.SI(Movimientos!B:B,A{stock.row_count+1},Movimientos!D:D)/7)'  # Consumo_dia
+            e["correo"], "", "", "", "",
+            f'''=SI.ERROR(
+ ABS(SUMAR.SI.CONJUNTO(
+   Movimientos!D:D,
+   Movimientos!B:B,A{next_row},
+   Movimientos!D:D,"<0"
+ )) /
+ MAX(1,
+   MAX(SI((Movimientos!B:B=A{next_row})*(Movimientos!D:D<0),Movimientos!A:A)) -
+   MIN(SI((Movimientos!B:B=A{next_row})*(Movimientos!D:D<0),Movimientos!A:A)) + 1
+ ),
+0)'''
         ]
-        stock.append_row(fila)
+
+        stock.append_row(fila, value_input_option="USER_ENTERED")
 
         if e["stock"]>0:
             mov.append_row([
-                datetime.now().strftime("%d/%m/%Y %H:%M"),
-                e["nombre"],"",e["stock"],m.from_user.first_name
+                datetime.now(ZoneInfo("America/Santo_Domingo")),
+                e["nombre"],"",
+                e["stock"],m.from_user.first_name
             ])
 
         bot.reply_to(m,"✅ Creado")
@@ -217,7 +172,7 @@ def movs(m):
     for f in data:
         if prod==f.get("Producto","").lower():
             mov.append_row([
-                datetime.now().strftime("%d/%m/%Y %H:%M"),
+                datetime.now(ZoneInfo("America/Santo_Domingo")),
                 prod,"",
                 cant if tipo=="entrada" else -cant,
                 m.from_user.first_name
@@ -226,59 +181,6 @@ def movs(m):
             return
 
     bot.reply_to(m,"❌ No encontrado")
-
-# =========================
-# VER TODO
-# =========================
-@bot.message_handler(func=lambda m: m.text and ok(m) and "ver todo" in m.text.lower())
-def ver(m):
-    prods=stock.col_values(1)
-    st=stock.col_values(2)
-
-    txt="📦\n"
-    for i in range(1,len(prods)):
-        txt+=f"{prods[i]} → {st[i]}\n"
-
-    bot.reply_to(m,txt)
-
-# =========================
-# BUSCAR
-# =========================
-@bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower().startswith("buscar"))
-def buscar(m):
-    b=m.text.replace("buscar","").strip().lower()
-    data=stock.get_all_records()
-
-    for f in data:
-        if b in f.get("Producto","").lower():
-            bot.reply_to(m,
-                f"{f['Producto']}\nStock:{f.get('Stock_Actual')}\n{f.get('Nivel')} {f.get('Pasillo')} {f.get('Lado')} {f.get('Seccion')}")
-            return
-
-    bot.reply_to(m,"❌")
-
-# =========================
-# ELIMINAR
-# =========================
-elim={}
-
-@bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower().startswith("eliminar"))
-def eliminar(m):
-    nombre=m.text.replace("eliminar","").strip().lower()
-    data=stock.get_all_records()
-
-    for i,f in enumerate(data):
-        if nombre==f.get("Producto","").lower():
-            elim[m.chat.id]=i+2
-            bot.reply_to(m,"Escribe SI")
-            return
-
-@bot.message_handler(func=lambda m: m.chat.id in elim and ok(m))
-def conf(m):
-    if m.text.lower()=="si":
-        stock.delete_rows(elim[m.chat.id])
-        bot.reply_to(m,"🗑️")
-    del elim[m.chat.id]
 
 # =========================
 # START
