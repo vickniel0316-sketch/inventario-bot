@@ -7,256 +7,158 @@ import os, json, time, threading, math
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # =========================
-# VARIABLES
+# CONFIGURACIÓN Y ENTORNO
 # =========================
 TOKEN = os.getenv("TOKEN")
 GOOGLE_CREDS = os.getenv("GOOGLE_CREDS")
-CHAT_ID = 6249114480
-MI_EMAIL = "miemail@empresa.com"
+CHAT_ID = 6249114480  # Tu ID de Telegram
 
 if not TOKEN or not GOOGLE_CREDS:
-    raise Exception("❌ Faltan variables de entorno")
+    raise Exception("❌ Faltan variables de entorno: TOKEN o GOOGLE_CREDS")
 
 # =========================
-# GOOGLE SHEETS (CON REINTENTOS)
+# CONEXIÓN A GOOGLE SHEETS
 # =========================
 def conectar_sheets():
-    intentos = 0
-    while intentos < 5:
-        try:
-            creds_dict = json.loads(GOOGLE_CREDS)
-            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, [
-                "https://spreadsheets.google.com/feeds",
-                "https://www.googleapis.com/auth/drive"
-            ])
-            client = gspread.authorize(creds)
-            ss = client.open("inventario_vickniel01")
-            return ss.worksheet("Stock"), ss.worksheet("Movimientos")
-        except Exception as e:
-            intentos += 1
-            print(f"⚠️ Error de conexión (Intento {intentos}): {e}")
-            time.sleep(5)
-    raise Exception("❌ No se pudo conectar a Google Sheets")
+    try:
+        creds_dict = json.loads(GOOGLE_CREDS)
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, [
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive"
+        ])
+        client = gspread.authorize(creds)
+        ss = client.open("inventario_vickniel01")
+        return ss.worksheet("Stock"), ss.worksheet("Movimientos")
+    except Exception as e:
+        print(f"❌ Error conectando a Sheets: {e}")
+        return None, None
 
 stock, mov = conectar_sheets()
-print("✅ Sheets conectado")
 
 # =========================
-# BOT
+# LÓGICA DE PEDIDOS (Sincronizada 3 + 1)
+# =========================
+def calc_pedidos():
+    try:
+        # Forzamos refresco de datos
+        data = stock.get_all_records()
+    except Exception as e:
+        return f"⚠️ Error al leer la base de datos: {e}"
+    
+    res = []
+    tolerancia = 2
+
+    for f in data:
+        p = f.get("Producto", "")
+        s = num(f.get("Stock_Actual", 0))
+        c = num(f.get("Consumo_dia", 0))
+        t = num(f.get("Tiempo_entrega", 0))
+        u = num(f.get("Unidades_Caja", 1))
+        dias_mov = num(f.get("Dias", 0)) # Columna H
+
+        if u <= 0 or not p: continue
+
+        # --- DETERMINACIÓN DE CRITERIO (3 + 1) ---
+        if dias_mov < 3:
+            # Data Insuficiente: Avisa en 3 cajas, repone hasta 4
+            punto_reorden = 3 * u
+            objetivo_stock = 4 * u
+        else:
+            # Alta Rotación: Avisa en T+2, repone hasta 15 días
+            punto_reorden = c * (t + tolerancia)
+            objetivo_stock = c * 15
+
+        # --- VERIFICACIÓN DE ALERTA ---
+        if s <= punto_reorden:
+            # Calculamos cuántas unidades faltan para el objetivo
+            unidades_a_pedir = max(0, objetivo_stock - s)
+            cajas = math.ceil(unidades_a_pedir / u)
+            
+            # Si el stock es bajo pero el cálculo da 0, pedimos al menos 1 caja
+            if cajas <= 0: cajas = 1
+            
+            res.append((p, s, cajas))
+    return res
+
+def msg_pedidos(lista):
+    if isinstance(lista, str): return lista
+    if not lista: return "✅ Inventario saludable. Todos los niveles están por encima del punto de reorden."
+    
+    txt = "📦 *REPORTE DE PEDIDOS SUGERIDOS*\n"
+    txt += "Crit.: Avisa en 3 cajas / Repone a 4\n"
+    txt += "--------------------------------\n\n"
+    for p, s, k in lista:
+        txt += f"🔹 *{p}*\n   Stock Actual: {s}\n   👉 *Pedir: {k} cajas*\n\n"
+    return txt
+
+# =========================
+# FUNCIONES AUXILIARES
+# =========================
+def num(x):
+    try:
+        # Maneja strings con coma decimal o formatos europeos/RD
+        return float(str(x).replace(',', '.'))
+    except:
+        return 0
+
+def ok(m):
+    return m.from_user.id == CHAT_ID
+
+# =========================
+# BOT Y COMANDOS
 # =========================
 bot = telebot.TeleBot(TOKEN)
 
+@bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower() == "pedidos")
+def enviar_reporte(m):
+    bot.send_chat_action(m.chat.id, 'typing')
+    resultado = calc_pedidos()
+    bot.reply_to(m, msg_pedidos(resultado), parse_mode="Markdown")
+
+@bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower().startswith(("entrada", "salida")))
+def registrar_movimiento(m):
+    partes = m.text.split()
+    if len(partes) < 3:
+        bot.reply_to(m, "❌ Formato incorrecto. Usa: `entrada [producto] [cantidad]`")
+        return
+
+    tipo = partes[0].lower()
+    try:
+        cant = num(partes[-1])
+        # El nombre del producto puede tener espacios
+        prod_nombre = " ".join(partes[1:-1]).strip().lower()
+        
+        # Registro con USER_ENTERED para que Sheets procese números y fechas correctamente
+        mov.append_row([
+            datetime.now(ZoneInfo("America/Santo_Domingo")).strftime("%Y-%m-%d %H:%M:%S"),
+            prod_nombre,
+            "Bot Telegram",
+            cant if tipo == "entrada" else -cant,
+            m.from_user.first_name
+        ], value_input_option="USER_ENTERED")
+        
+        bot.reply_to(m, f"✅ {tipo.capitalize()} de {cant} registrada para '{prod_nombre}'.")
+    except Exception as e:
+        bot.reply_to(m, f"❌ Error al registrar: {e}")
+
 # =========================
-# WEB (KEEP ALIVE)
+# SERVIDOR WEB (KEEP ALIVE)
 # =========================
-class Handler(BaseHTTPRequestHandler):
+class HealthCheck(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"OK")
 
-def web():
-    port = int(os.environ.get("PORT", 8080))
-    HTTPServer(("0.0.0.0", port), Handler).serve_forever()
+def run_web():
+    server_address = ("0.0.0.0", int(os.environ.get("PORT", 8080)))
+    HTTPServer(server_address, HealthCheck).serve_forever()
 
-threading.Thread(target=web, daemon=True).start()
-
-# =========================
-# UTILS
-# =========================
-def ok(m): return m.from_user.id == CHAT_ID
-def num(x):
-    try: return float(x)
-    except: return 0
+# Iniciar servidor en hilo aparte
+threading.Thread(target=run_web, daemon=True).start()
 
 # =========================
-# PEDIDOS
+# INICIO DEL BOT
 # =========================
-def calc_pedidos():
-    data = stock.get_all_records()
-    res = []
-    for f in data:
-        p = f.get("Producto","")
-        s = num(f.get("Stock_Actual",0))
-        c = num(f.get("Consumo_dia",0))
-        t = num(f.get("Tiempo_entrega",0))
-        u = num(f.get("Unidades_Caja",1))
-        if u <= 0: continue
-        
-        stock_necesario = c * (t + 2)
-        if c > 0:
-            if s <= stock_necesario:
-                cajas = math.ceil(stock_necesario / u)
-                res.append((p,s,c,t,cajas))
-        else:
-            if s <= 3 * u:
-                cajas = 3
-                res.append((p,s,c,t,cajas))
-    return res
-
-def msg_pedidos(lista):
-    if not lista: return "✅ Nada que pedir"
-    txt = "📦 PEDIDOS:\n\n"
-    for p,s,c,t,k in lista:
-        txt += f"{p}\nStock:{s} Cons:{c} Ent:{t}\n👉 {k} cajas\n\n"
-    return txt
-
-@bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower()=="pedidos")
-def pedidos(m):
-    bot.reply_to(m, msg_pedidos(calc_pedidos()))
-
-def auto():
-    ultimo=None
-    while True:
-        try:
-            ahora = datetime.now(ZoneInfo("America/Santo_Domingo"))
-            if ahora.hour==8 and ultimo!=ahora.date():
-                bot.send_message(CHAT_ID, msg_pedidos(calc_pedidos()))
-                print("✅ auto enviado")
-                ultimo=ahora.date()
-        except Exception as e:
-            print(f"Error en hilo auto: {e}")
-        time.sleep(60)
-
-threading.Thread(target=auto, daemon=True).start()
-
-# =========================
-# NUEVO PRODUCTO
-# =========================
-estado = {}
-
-@bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower()=="nuevo")
-def nuevo(m):
-    estado[m.chat.id]={"p":"nombre"}
-    bot.reply_to(m,"Nombre del producto:")
-
-@bot.message_handler(func=lambda m: m.chat.id in estado and ok(m))
-def flujo(m):
-    e = estado[m.chat.id]
-    t = m.text
-    
-    if e["p"] == "nombre":
-        e["nombre"] = t
-        e["p"] = "stock"
-        bot.reply_to(m,"Stock inicial:")
-        return
-    elif e["p"] == "stock":
-        e["stock"] = num(t)
-        e["p"] = "nivel"
-        bot.reply_to(m,"Nivel:")
-        return
-    elif e["p"] == "nivel":
-        e["nivel"] = "N-" + t
-        e["p"] = "pasillo"
-        bot.reply_to(m,"Pasillo:")
-        return
-    elif e["p"] == "pasillo":
-        e["pasillo"] = "P-" + t
-        e["p"] = "lado"
-        bot.reply_to(m,"Lado A/B:")
-        return
-    elif e["p"] == "lado":
-        e["lado"] = t.upper()
-        e["p"] = "sec"
-        bot.reply_to(m,"Sección:")
-        return
-    elif e["p"] == "sec":
-        e["sec"] = t
-        e["p"] = "caja"
-        bot.reply_to(m,"Unidades por caja:")
-        return
-    elif e["p"] == "caja":
-        e["caja"] = num(t)
-        e["p"] = "tiempo"
-        bot.reply_to(m,"Tiempo entrega:")
-        return
-    elif e["p"] == "tiempo":
-        e["tiempo"] = num(t)
-        e["p"] = "correo"
-        bot.reply_to(m,"Correo del responsable:")
-        return
-    elif e["p"] == "correo":
-        e["correo"] = t
-        bot.send_chat_action(m.chat.id, 'typing')
-        try:
-            # Obtener fila destino
-            next_row = len(stock.get_all_values()) + 1
-            
-            # Fórmulas
-            f_stock = f'=SUMAR.SI(Movimientos!B:B, A{next_row}, Movimientos!D:D)'
-            
-            # Fórmula de la Columna H (Dias) solicitada
-            f_dias = f'''=SUMA(1/CONTAR.SI(SI((Movimientos!B:B=A{next_row})*(Movimientos!D:D<0)*(Movimientos!A:A>=HOY()-7),Movimientos!A:A),SI((Movimientos!B:B=A{next_row})*(Movimientos!D:D<0)*(Movimientos!A:A>=HOY()-7),Movimientos!A:A)))'''
-            
-            # Fórmula Consumo_dia
-            f_cons = f'''=SI.ERROR(ABS(SUMAR.SI.CONJUNTO(Movimientos!D:D,Movimientos!B:B,A{next_row},Movimientos!D:D,"<0"))/MAX(1,MAX(SI((Movimientos!B:B=A{next_row})*(Movimientos!D:D<0),Movimientos!A:A))-MIN(SI((Movimientos!B:B=A{next_row})*(Movimientos!D:D<0),Movimientos!A:A))+1),0)'''
-            
-            # Registro en Stock (A-K)
-            fila = [
-                e["nombre"],    # A
-                f_stock,        # B
-                e["nivel"],     # C
-                e["pasillo"],   # D
-                e["lado"],      # E
-                e["sec"],       # F
-                e["correo"],    # G
-                f_dias,         # H (NUEVA FORMULA)
-                f_cons,         # I
-                e["tiempo"],    # J
-                e["caja"]       # K
-            ]
-            
-            stock.append_row(fila, value_input_option="USER_ENTERED")
-            
-            # Registro de Stock Inicial en Movimientos
-            if e["stock"] > 0:
-                mov.append_row([
-                    datetime.now(ZoneInfo("America/Santo_Domingo")).strftime("%Y-%m-%d %H:%M:%S"), 
-                    e["nombre"], 
-                    "Carga Inicial", 
-                    e["stock"], 
-                    m.from_user.first_name
-                ], value_input_option="USER_ENTERED")
-            
-            bot.reply_to(m, f"✅ Producto '{e['nombre']}' creado exitosamente.")
-        except Exception as err:
-            bot.reply_to(m, f"❌ Error al registrar: {err}")
-            print(err)
-        del estado[m.chat.id]
-
-# =========================
-# MOVIMIENTOS
-# =========================
-@bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower().startswith(("entrada","salida")))
-def movs(m):
-    p = m.text.split()
-    if len(p) < 3: return
-    tipo = p[0].lower()
-    cant = num(p[-1])
-    prod = " ".join(p[1:-1]).lower()
-    
-    # Validar existencia y registrar
-    data = stock.get_all_records()
-    for f in data:
-        if prod == f.get("Producto","").lower():
-            mov.append_row([
-                datetime.now(ZoneInfo("America/Santo_Domingo")).strftime("%Y-%m-%d %H:%M:%S"), 
-                prod, 
-                "", 
-                cant if tipo=="entrada" else -cant, 
-                m.from_user.first_name
-            ], value_input_option="USER_ENTERED")
-            bot.reply_to(m, "✅ Movimiento registrado")
-            return
-    bot.reply_to(m, "❌ Producto no encontrado")
-
-# =========================
-# START
-# =========================
-print("🚀 BOT LISTO")
-bot.remove_webhook()
-while True:
-    try:
-        bot.polling(none_stop=True)
-    except Exception as e:
-        time.sleep(5)
+print("🚀 Vickniel Bot sincronizado (Lógica 3+1) iniciado...")
+bot.infinity_polling()
