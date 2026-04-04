@@ -184,10 +184,10 @@ def flujo(m):
         e["correo"] = t
 
         # ========================
-        # BUSCAR PRIMERA FILA VACÍA EN COL A
+        # CREAR FILA VACÍA EN STOCK
         # ========================
-        col_a = stock.col_values(1)
-        next_row = len(col_a) + 1
+        stock.append_row([""]*12)  # A-L columnas
+        next_row = len(stock.col_values(1))  # fila recién agregada
 
         # INSERTAR DATOS MANUALES
         stock.update(f"A{next_row}", e["nombre"], value_input_option="USER_ENTERED")
