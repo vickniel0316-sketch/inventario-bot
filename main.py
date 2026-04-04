@@ -15,10 +15,10 @@ CHAT_ID = 6249114480
 MI_EMAIL = "miemail@empresa.com"
 
 if not TOKEN or not GOOGLE_CREDS:
-    raise Exception("❌ Faltan variables")
+    raise Exception("❌ Faltan variables de entorno")
 
 # =========================
-# GOOGLE SHEETS (CON REINTENTOS PARA ERROR 500)
+# GOOGLE SHEETS (CON REINTENTOS)
 # =========================
 def conectar_sheets():
     intentos = 0
@@ -47,7 +47,7 @@ print("✅ Sheets conectado")
 bot = telebot.TeleBot(TOKEN)
 
 # =========================
-# WEB
+# WEB (KEEP ALIVE)
 # =========================
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -81,7 +81,8 @@ def calc_pedidos():
         c = num(f.get("Consumo_dia",0))
         t = num(f.get("Tiempo_entrega",0))
         u = num(f.get("Unidades_Caja",1))
-        if u == 0: continue
+        if u <= 0: continue
+        
         stock_necesario = c * (t + 2)
         if c > 0:
             if s <= stock_necesario:
@@ -108,7 +109,6 @@ def auto():
     ultimo=None
     while True:
         try:
-            # CORREGIDO: "Santo_Domingo" con 'g'
             ahora = datetime.now(ZoneInfo("America/Santo_Domingo"))
             if ahora.hour==8 and ultimo!=ahora.date():
                 bot.send_message(CHAT_ID, msg_pedidos(calc_pedidos()))
@@ -134,59 +134,94 @@ def nuevo(m):
 def flujo(m):
     e = estado[m.chat.id]
     t = m.text
-    pasos = ["nombre", "stock", "nivel", "pasillo", "lado", "sec", "caja", "tiempo", "correo"]
     
-    # Lógica de estados simplificada
     if e["p"] == "nombre":
         e["nombre"] = t
         e["p"] = "stock"
         bot.reply_to(m,"Stock inicial:")
+        return
     elif e["p"] == "stock":
         e["stock"] = num(t)
         e["p"] = "nivel"
         bot.reply_to(m,"Nivel:")
+        return
     elif e["p"] == "nivel":
         e["nivel"] = "N-" + t
         e["p"] = "pasillo"
         bot.reply_to(m,"Pasillo:")
+        return
     elif e["p"] == "pasillo":
         e["pasillo"] = "P-" + t
         e["p"] = "lado"
         bot.reply_to(m,"Lado A/B:")
+        return
     elif e["p"] == "lado":
         e["lado"] = t.upper()
         e["p"] = "sec"
         bot.reply_to(m,"Sección:")
+        return
     elif e["p"] == "sec":
         e["sec"] = t
         e["p"] = "caja"
         bot.reply_to(m,"Unidades por caja:")
+        return
     elif e["p"] == "caja":
         e["caja"] = num(t)
         e["p"] = "tiempo"
         bot.reply_to(m,"Tiempo entrega:")
+        return
     elif e["p"] == "tiempo":
         e["tiempo"] = num(t)
         e["p"] = "correo"
         bot.reply_to(m,"Correo del responsable:")
+        return
     elif e["p"] == "correo":
         e["correo"] = t
         bot.send_chat_action(m.chat.id, 'typing')
         try:
+            # Obtener fila destino
             next_row = len(stock.get_all_values()) + 1
+            
+            # Fórmulas
             f_stock = f'=SUMAR.SI(Movimientos!B:B, A{next_row}, Movimientos!D:D)'
+            
+            # Fórmula de la Columna H (Dias) solicitada
+            f_dias = f'''=SUMA(1/CONTAR.SI(SI((Movimientos!B:B=A{next_row})*(Movimientos!D:D<0)*(Movimientos!A:A>=HOY()-7),Movimientos!A:A),SI((Movimientos!B:B=A{next_row})*(Movimientos!D:D<0)*(Movimientos!A:A>=HOY()-7),Movimientos!A:A)))'''
+            
+            # Fórmula Consumo_dia
             f_cons = f'''=SI.ERROR(ABS(SUMAR.SI.CONJUNTO(Movimientos!D:D,Movimientos!B:B,A{next_row},Movimientos!D:D,"<0"))/MAX(1,MAX(SI((Movimientos!B:B=A{next_row})*(Movimientos!D:D<0),Movimientos!A:A))-MIN(SI((Movimientos!B:B=A{next_row})*(Movimientos!D:D<0),Movimientos!A:A))+1),0)'''
             
-            fila = [e["nombre"], f_stock, e["nivel"], e["pasillo"], e["lado"], e["sec"], e["correo"], "", f_cons, e["tiempo"], e["caja"]]
+            # Registro en Stock (A-K)
+            fila = [
+                e["nombre"],    # A
+                f_stock,        # B
+                e["nivel"],     # C
+                e["pasillo"],   # D
+                e["lado"],      # E
+                e["sec"],       # F
+                e["correo"],    # G
+                f_dias,         # H (NUEVA FORMULA)
+                f_cons,         # I
+                e["tiempo"],    # J
+                e["caja"]       # K
+            ]
+            
             stock.append_row(fila, value_input_option="USER_ENTERED")
             
+            # Registro de Stock Inicial en Movimientos
             if e["stock"] > 0:
-                # CORREGIDO: "Santo_Domingo"
-                mov.append_row([datetime.now(ZoneInfo("America/Santo_Domingo")).strftime("%Y-%m-%d %H:%M:%S"), e["nombre"], "Carga Inicial", e["stock"], m.from_user.first_name])
+                mov.append_row([
+                    datetime.now(ZoneInfo("America/Santo_Domingo")).strftime("%Y-%m-%d %H:%M:%S"), 
+                    e["nombre"], 
+                    "Carga Inicial", 
+                    e["stock"], 
+                    m.from_user.first_name
+                ], value_input_option="USER_ENTERED")
             
-            bot.reply_to(m, f"✅ Registrado en fila {next_row}")
+            bot.reply_to(m, f"✅ Producto '{e['nombre']}' creado exitosamente.")
         except Exception as err:
-            bot.reply_to(m, f"❌ Error: {err}")
+            bot.reply_to(m, f"❌ Error al registrar: {err}")
+            print(err)
         del estado[m.chat.id]
 
 # =========================
@@ -196,15 +231,24 @@ def flujo(m):
 def movs(m):
     p = m.text.split()
     if len(p) < 3: return
-    tipo, cant, prod = p[0].lower(), num(p[-1]), " ".join(p[1:-1]).lower()
+    tipo = p[0].lower()
+    cant = num(p[-1])
+    prod = " ".join(p[1:-1]).lower()
     
-    for f in stock.get_all_records():
+    # Validar existencia y registrar
+    data = stock.get_all_records()
+    for f in data:
         if prod == f.get("Producto","").lower():
-            # CORREGIDO: "Santo_Domingo"
-            mov.append_row([datetime.now(ZoneInfo("America/Santo_Domingo")).strftime("%Y-%m-%d %H:%M:%S"), prod, "", cant if tipo=="entrada" else -cant, m.from_user.first_name])
-            bot.reply_to(m,"✅ OK")
+            mov.append_row([
+                datetime.now(ZoneInfo("America/Santo_Domingo")).strftime("%Y-%m-%d %H:%M:%S"), 
+                prod, 
+                "", 
+                cant if tipo=="entrada" else -cant, 
+                m.from_user.first_name
+            ], value_input_option="USER_ENTERED")
+            bot.reply_to(m, "✅ Movimiento registrado")
             return
-    bot.reply_to(m,"❌ No encontrado")
+    bot.reply_to(m, "❌ Producto no encontrado")
 
 # =========================
 # START
