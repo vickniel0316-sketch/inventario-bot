@@ -54,56 +54,51 @@ def num(x):
 estado = {}
 
 # =========================
-# MENÚ (ARREGLADO)
+# MENÚS
 # =========================
 def menu_principal():
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row(KeyboardButton("📦 Inventario"))
+    markup.row(KeyboardButton("🔄 Movimientos"))
+    return markup
 
-    markup.row(
-        KeyboardButton("📦 Pedidos"),
-        KeyboardButton("📋 Ver")
-    )
-    markup.row(
-        KeyboardButton("➕ Nuevo"),
-        KeyboardButton("✏️ Editar")
-    )
-    markup.row(
-        KeyboardButton("🗑️ Eliminar")
-    )
-    markup.row(
-        KeyboardButton("📥 Entrada"),
-        KeyboardButton("📤 Salida")
-    )
-    markup.row(
-        KeyboardButton("🔙 Menú")
-    )
+def menu_inventario():
+    markup = ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row(KeyboardButton("📦 Pedidos"), KeyboardButton("📋 Ver"))
+    markup.row(KeyboardButton("➕ Nuevo"), KeyboardButton("✏️ Editar"))
+    markup.row(KeyboardButton("🗑️ Eliminar"))
+    markup.row(KeyboardButton("🔙 Menú"))
+    return markup
 
+def menu_movimientos():
+    markup = ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row(KeyboardButton("📥 Entrada"), KeyboardButton("📤 Salida"))
+    markup.row(KeyboardButton("🔙 Menú"))
     return markup
 
 @bot.message_handler(commands=['start'])
 def start(m):
-    bot.send_message(
-        m.chat.id,
-        "👋 Sistema listo",
-        reply_markup=menu_principal()
-    )
+    bot.send_message(m.chat.id, "👋 Sistema listo", reply_markup=menu_principal())
 
 # =========================
-# VOLVER AL MENÚ
+# NAVEGACIÓN
 # =========================
+@bot.message_handler(func=lambda m: m.text == "📦 Inventario" and ok(m))
+def abrir_inventario(m):
+    bot.send_message(m.chat.id, "📦 Módulo Inventario", reply_markup=menu_inventario())
+
+@bot.message_handler(func=lambda m: m.text == "🔄 Movimientos" and ok(m))
+def abrir_movimientos(m):
+    bot.send_message(m.chat.id, "🔄 Módulo Movimientos", reply_markup=menu_movimientos())
+
 @bot.message_handler(func=lambda m: m.text == "🔙 Menú" and ok(m))
 def volver_menu(m):
     if m.chat.id in estado:
         del estado[m.chat.id]
-
-    bot.send_message(
-        m.chat.id,
-        "🏠 Menú principal",
-        reply_markup=menu_principal()
-    )
+    bot.send_message(m.chat.id, "🏠 Menú principal", reply_markup=menu_principal())
 
 # =========================
-# PEDIDOS (OPTIMIZADO)
+# PEDIDOS (SIN CAMBIOS DE LÓGICA)
 # =========================
 @bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower() in ["pedidos","📦 pedidos"])
 def pedidos(m):
@@ -121,7 +116,6 @@ def pedidos(m):
         if u <= 0:
             continue
 
-        # 🆕 NUEVOS
         if dias < 3:
             if s < (2 * u):
                 objetivo = 5 * u
@@ -134,7 +128,6 @@ def pedidos(m):
                     hay = True
             continue
 
-        # 📊 CONSUMO
         if c <= 0:
             continue
 
@@ -152,21 +145,17 @@ def pedidos(m):
             txt += f"🚚 Pedir: *{cajas} cajas*\n\n"
             hay = True
 
-    bot.send_message(
-        m.chat.id,
-        txt if hay else "✅ Inventario saludable",
-        parse_mode="Markdown",
-        reply_markup=menu_principal()
-    )
+    bot.send_message(m.chat.id, txt if hay else "✅ Inventario saludable", parse_mode="Markdown", reply_markup=menu_inventario())
 
 # =========================
-# FLUJOS (NO TOCADOS)
+# RESTO DEL BOT (NO TOCADO)
 # =========================
+
 @bot.message_handler(func=lambda m: m.chat.id in estado and ok(m))
 def flujos(m):
     if m.text == "🔙 Menú":
         return
-    # tu lógica original aquí
+    # tu lógica original sigue aquí intacta
 
 # =========================
 # RUN
