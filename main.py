@@ -7,14 +7,11 @@ import os, json, time, threading, math
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # =========================
-# 1. CONFIGURACIÓN DE CONEXIÓN (TU ESTRUCTURA GANADORA)
+# 1. CONEXIÓN (TU ESTRUCTURA FIJA)
 # =========================
 TOKEN = os.getenv("TOKEN")
 GOOGLE_CREDS = os.getenv("GOOGLE_CREDS")
-CHAT_ID = 6249114480  # Tu ID verificado
-
-if not TOKEN or not GOOGLE_CREDS:
-    raise Exception("❌ ERROR: Configura TOKEN y GOOGLE_CREDS en Railway")
+CHAT_ID = 6249114480
 
 creds_dict = json.loads(GOOGLE_CREDS)
 creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, [
@@ -23,12 +20,12 @@ creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, [
 ])
 
 client = gspread.authorize(creds)
-sheet = client.open("inventario_vickniel01")
-stock = sheet.worksheet("Stock")
-mov = sheet.worksheet("Movimientos")
+ss = client.open("inventario_vickniel01")
+stock = ss.worksheet("Stock")
+mov = ss.worksheet("Movimientos")
 
 # =========================
-# 2. KEEP ALIVE (PARA QUE RAILWAY NO LO DUERMA)
+# 2. SERVER (KEEP ALIVE RAILWAY)
 # =========================
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -41,7 +38,7 @@ def web():
 threading.Thread(target=web, daemon=True).start()
 
 # =========================
-# 3. UTILIDADES Y BOT
+# 3. BOT Y UTILIDADES
 # =========================
 bot = telebot.TeleBot(TOKEN)
 def ok(m): return m.from_user.id == CHAT_ID
@@ -52,30 +49,20 @@ def num(x):
 estado = {}
 
 # =========================
-# 4. COMANDOS: VER, BUSCAR, ELIMINAR, PEDIDOS
+# 4. COMANDOS (VER, BUSCAR, ELIMINAR)
 # =========================
 @bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower() == "ver")
-def ver_todo(m):
+def ver(m):
     data = stock.get_all_records()
-    if not data:
-        bot.reply_to(m, "📭 Inventario vacío.")
-        return
-    txt = "📋 *INVENTARIO ACTUAL*\n\n"
-    for f in data:
-        txt += f"• *{f['Producto']}*: {f['Stock_Actual']} uds\n"
+    txt = "📋 *STOCK*\n\n" + "\n".join([f"• *{f['Producto']}*: {f['Stock_Actual']}" for f in data])
     bot.reply_to(m, txt, parse_mode="Markdown")
 
 @bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower().startswith("buscar"))
 def buscar(m):
     q = m.text.lower().replace("buscar", "").strip()
-    data = stock.get_all_records()
-    encontrados = [f for f in data if q in str(f.get("Producto","")).lower()]
-    if not encontrados:
-        bot.reply_to(m, "❌ No encontrado."); return
-    for p in encontrados:
-        res = (f"🔍 *ENCONTRADO*\n\n📦 *Producto:* {p['Producto']}\n🔢 *Stock:* {p['Stock_Actual']}\n"
-               f"📍 *Ubicación:* {p.get('Nivel','')} {p.get('Pasillo','')} {p.get('Lado','')} {p.get('Seccion','')}")
-        bot.reply_to(m, res, parse_mode="Markdown")
+    p = [f for f in stock.get_all_records() if q in str(f['Producto']).lower()]
+    for i in p:
+        bot.reply_to(m, f"📦 *{i['Producto']}*\n🔢 Stock: {i['Stock_Actual']}\n📍 {i.get('Nivel','')} {i.get('Pasillo','')} {i.get('Lado','')} {i.get('Seccion','')}", parse_mode="Markdown")
 
 @bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower().startswith("eliminar"))
 def eliminar(m):
@@ -87,111 +74,87 @@ def eliminar(m):
     except:
         bot.reply_to(m, "❌ No encontrado.")
 
+# =========================
+# 5. COMANDO PEDIDOS (LÓGICA REVISADA 3 DÍAS / 4 CAJAS)
+# =========================
 @bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower() == "pedidos")
 def pedidos(m):
     data = stock.get_all_records()
     txt = "📦 *SUGERENCIA DE PEDIDOS*\n\n"
-    hay_pedidos = False
-    for f in data:
-        s = num(f.get("Stock_Actual", 0))
-        c = num(f.get("Consumo_dia", 0))
-        t = num(f.get("Tiempo_entrega", 0))
-        u = num(f.get("Unidades_Caja", 1))
-        
-        stock_seguridad = c * (t + 2)
-        if s <= stock_seguridad and u > 0:
-            cajas = math.ceil((stock_seguridad + (c * 7) - s) / u)
-            if cajas > 0:
-                txt += f"⚠️ *{f['Producto']}*\nStock: {s} | Pedir: {cajas} cajas\n\n"
-                hay_pedidos = True
+    hay_alertas = False
     
-    bot.reply_to(m, txt if hay_pedidos else "✅ Todo en orden, no hay pedidos pendientes.", parse_mode="Markdown")
+    for f in data:
+        s = num(f.get('Stock_Actual', 0))
+        c = num(f.get('Consumo_dia', 0))
+        t = num(f.get('Tiempo_entrega', 0))
+        u = num(f.get('Unidades_Caja', 1))
+        dias = num(f.get('Dias', 0))
+
+        # REGLA PRODUCTO NUEVO: Menos de 3 días
+        if dias < 3:
+            if s < (u * 0.5): # Menos de media caja
+                txt += f"🆕 *{f['Producto']} (Nuevo)*\n⚠️ Stock crítico: {int(s)} uds. Pedir: *4 cajas*\n\n"
+                hay_alertas = True
+            continue 
+
+        # REGLA PRODUCTO ESTABLE: 3 días o más
+        punto_pedido = c * (t + 2)
+        if s <= punto_pedido and c > 0:
+            faltante = (punto_pedido + (c * 7)) - s
+            cajas_sugeridas = math.ceil(faltante / u) if u > 0 else 0
+            if cajas_sugeridas > 0:
+                txt += f"📈 *{f['Producto']}*\n📦 Stock: {int(s)} | Sugerencia: *{cajas_sugeridas} cajas*\n"
+                txt += f"⏱️ Agota en: {round(s/c, 1)} días\n\n"
+                hay_alertas = True
+
+    bot.reply_to(m, txt if hay_alertas else "✅ *Inventario Saludable*", parse_mode="Markdown")
 
 # =========================
-# 5. FLUJO NUEVO (UBICACIÓN + TUS FÓRMULAS MAESTRAS)
+# 6. NUEVO (FILA ÚNICA + FÓRMULAS)
 # =========================
 @bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower() == "nuevo")
 def nuevo(m):
     estado[m.chat.id] = {"p": "nombre"}
-    bot.reply_to(m, "📝 *NUEVO PRODUCTO*\nEscribe el NOMBRE:")
+    bot.reply_to(m, "📝 Nombre del producto:")
 
 @bot.message_handler(func=lambda m: m.chat.id in estado and ok(m))
 def flujo_nuevo(m):
     e = estado[m.chat.id]; t = m.text; paso = e["p"]
+    pasos = [("nombre","stock","Stock inicial:"), ("stock","nivel","Nivel:"), ("nivel","pasillo","Pasillo:"), ("pasillo","lado","Lado:"), ("lado","sec","Sección:"), ("sec","caja","Und/Caja:"), ("caja","tiempo","Días entrega:"), ("tiempo","correo","Correo:")]
     
-    secuencia = [
-        ("nombre", "stock", "Stock inicial:"),
-        ("stock", "nivel", "Nivel (ej: 1):"),
-        ("nivel", "pasillo", "Pasillo (ej: A):"),
-        ("pasillo", "lado", "Lado (A/B):"),
-        ("lado", "sec", "Sección:"),
-        ("sec", "caja", "Unidades por caja:"),
-        ("caja", "tiempo", "Tiempo entrega (días):"),
-        ("tiempo", "correo", "Correo responsable:")
-    ]
-
-    for act, sig, msg in secuencia:
+    for act, sig, msg in pasos:
         if paso == act:
-            e[act] = t if act not in ["stock", "caja", "tiempo"] else num(t)
-            e["p"] = sig
-            bot.reply_to(m, msg); return
+            e[act] = t if act not in ["stock","caja","tiempo"] else num(t)
+            e["p"] = sig; bot.reply_to(m, msg); return
 
     if paso == "correo":
-        e["correo"] = t
         idx = len(stock.get_all_values()) + 1
+        f1 = f'=SUMAR.SI(Movimientos!B:B; A{idx}; Movimientos!D:D)'
+        f2 = f'=SI.ERROR(SUMA(1/CONTAR.SI(SI((Movimientos!B:B=A{idx})*(Movimientos!D:D<0)*(Movimientos!A:A>=HOY()-7); Movimientos!A:A);SI((Movimientos!B:B=A{idx})*(Movimientos!D:D<0)*(Movimientos!A:A>=HOY()-7); Movimientos!A:A))); 0)'
+        f3 = f'=SI.ERROR(ABS(SUMAR.SI.CONJUNTO(Movimientos!D:D; Movimientos!B:B; A{idx}; Movimientos!D:D; "<0")) / MAX(1; MAX(SI((Movimientos!B:B=A{idx})*(Movimientos!D:D<0); Movimientos!A:A)) - MIN(SI((Movimientos!B:B=A{idx})*(Movimientos!D:D<0); Movimientos!A:A)) + 1); 0)'
         
-        # --- TUS FÓRMULAS EXACTAS ADAPTADAS A LA FILA ---
-        f_stock = f'=SUMAR.SI(Movimientos!B:B; A{idx}; Movimientos!D:D)'
-        
-        f_dias_unicos = (
-            f'=SI.ERROR(SUMA(1/CONTAR.SI('
-            f'SI((Movimientos!B:B=A{idx})*(Movimientos!D:D<0)*(Movimientos!A:A>=HOY()-7); Movimientos!A:A);'
-            f'SI((Movimientos!B:B=A{idx})*(Movimientos!D:D<0)*(Movimientos!A:A>=HOY()-7); Movimientos!A:A)'
-            f')); 0)'
-        )
-        
-        f_consumo_pro = (
-            f'=SI.ERROR(ABS(SUMAR.SI.CONJUNTO(Movimientos!D:D; Movimientos!B:B; A{idx}; Movimientos!D:D; "<0")) / '
-            f'MAX(1; MAX(SI((Movimientos!B:B=A{idx})*(Movimientos!D:D<0); Movimientos!A:A)) - '
-            f'MIN(SI((Movimientos!B:B=A{idx})*(Movimientos!D:D<0); Movimientos!A:A)) + 1); 0)'
-        )
-        
-        nueva_fila = [
-            e["nombre"], f_stock, "N-"+str(e["nivel"]), "P-"+str(e["pasillo"]), 
-            e["lado"].upper(), e["sec"], e["correo"], f_dias_unicos, f_consumo_pro, 
-            e["tiempo"], e["caja"]
-        ]
-        
-        stock.append_row(nueva_fila, value_input_option="USER_ENTERED")
-        
+        stock.append_row([e["nombre"], f1, "N-"+str(e["nivel"]), "P-"+str(e["pasillo"]), e["lado"].upper(), e["sec"], t, f2, f3, e["tiempo"], e["caja"]], value_input_option="USER_ENTERED")
         if e["stock"] > 0:
-            mov.append_row([
-                datetime.now(ZoneInfo("America/Santo_Domingo")).strftime("%Y-%m-%d %H:%M:%S"),
-                e["nombre"].lower(), "Carga Inicial", e["stock"], m.from_user.first_name
-            ], value_input_option="USER_ENTERED")
-        
-        bot.reply_to(m, f"✅ '{e['nombre']}' creado con éxito en la fila {idx}."); del estado[m.chat.id]
+            mov.append_row([datetime.now(ZoneInfo("America/Santo_Domingo")).strftime("%Y-%m-%d %H:%M:%S"), e["nombre"].lower(), "Carga Inicial", e["stock"], m.from_user.first_name], value_input_option="USER_ENTERED")
+        bot.reply_to(m, "✅ CREADO"); del estado[m.chat.id]
 
 # =========================
-# 6. ENTRADA / SALIDA (MOVIMIENTOS)
+# 7. ENTRADA/SALIDA
 # =========================
 @bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower().startswith(("entrada","salida")))
-def movs(m):
+def movimientos(m):
     p = m.text.split(); tipo = p[0].lower(); cant = num(p[-1]); prod = " ".join(p[1:-1]).lower()
-    mov.append_row([
-        datetime.now(ZoneInfo("America/Santo_Domingo")).strftime("%Y-%m-%d %H:%M:%S"),
-        prod, tipo.capitalize(), cant if tipo=="entrada" else -abs(cant), m.from_user.first_name
-    ], value_input_option="USER_ENTERED")
-    bot.reply_to(m, f"✅ {tipo.capitalize()} de {abs(cant)} unidades registrada.")
+    mov.append_row([datetime.now(ZoneInfo("America/Santo_Domingo")).strftime("%Y-%m-%d %H:%M:%S"), prod, tipo.capitalize(), cant if tipo=="entrada" else -abs(cant), m.from_user.first_name], value_input_option="USER_ENTERED")
+    bot.reply_to(m, f"✅ {tipo.capitalize()} OK")
 
 # =========================
-# 7. CIERRE (EL DESPERTADOR)
+# 8. START (EL QUE SÍ SUBE)
 # =========================
-print("🚀 BOT VICKNIEL HÍBRIDO LISTO")
+print("🚀 BOT VICKNIEL INICIADO")
 bot.remove_webhook()
 
 while True:
     try:
         bot.polling(none_stop=True, timeout=60)
     except Exception as e:
-        print(f"Error conexión: {e}"); time.sleep(5)
+        print(f"Error: {e}"); time.sleep(5)
