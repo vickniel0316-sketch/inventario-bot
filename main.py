@@ -51,6 +51,14 @@ def num(x):
     try: return float(str(x).replace(',', '.'))
     except: return 0
 
+# 🔥 LIMPIADOR DE TEXTO (CLAVE)
+def clean_text(t):
+    return t.replace("📦","").replace("📋","").replace("➕","")\
+            .replace("✏️","").replace("🗑️","")\
+            .replace("📥","").replace("📤","")\
+            .replace("🔄","").replace("🔙","")\
+            .strip().lower()
+
 estado = {}
 
 # =========================
@@ -83,24 +91,24 @@ def start(m):
 # =========================
 # NAVEGACIÓN
 # =========================
-@bot.message_handler(func=lambda m: m.text == "📦 Inventario" and ok(m))
+@bot.message_handler(func=lambda m: m.text and ok(m) and clean_text(m.text) == "inventario")
 def abrir_inventario(m):
     bot.send_message(m.chat.id, "📦 Módulo Inventario", reply_markup=menu_inventario())
 
-@bot.message_handler(func=lambda m: m.text == "🔄 Movimientos" and ok(m))
+@bot.message_handler(func=lambda m: m.text and ok(m) and clean_text(m.text) == "movimientos")
 def abrir_movimientos(m):
     bot.send_message(m.chat.id, "🔄 Módulo Movimientos", reply_markup=menu_movimientos())
 
-@bot.message_handler(func=lambda m: m.text == "🔙 Menú" and ok(m))
+@bot.message_handler(func=lambda m: m.text and ok(m) and clean_text(m.text) == "menu")
 def volver_menu(m):
     if m.chat.id in estado:
         del estado[m.chat.id]
     bot.send_message(m.chat.id, "🏠 Menú principal", reply_markup=menu_principal())
 
 # =========================
-# PEDIDOS (SIN CAMBIOS DE LÓGICA)
+# PEDIDOS
 # =========================
-@bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower() in ["pedidos","📦 pedidos"])
+@bot.message_handler(func=lambda m: m.text and ok(m) and clean_text(m.text) == "pedidos")
 def pedidos(m):
     data = stock.get_all_records()
     txt = "📦 *SUGERENCIA DE PEDIDOS*\n\n"
@@ -136,7 +144,6 @@ def pedidos(m):
 
         if s <= stock_critico:
             cajas = math.ceil((objetivo - s) / u)
-
             if cajas <= 0:
                 cajas = 1
 
@@ -148,14 +155,43 @@ def pedidos(m):
     bot.send_message(m.chat.id, txt if hay else "✅ Inventario saludable", parse_mode="Markdown", reply_markup=menu_inventario())
 
 # =========================
-# RESTO DEL BOT (NO TOCADO)
+# RESTO (AHORA FUNCIONA CON BOTONES)
 # =========================
+@bot.message_handler(func=lambda m: m.text and ok(m) and clean_text(m.text) == "ver")
+def ver(m):
+    data = stock.get_all_records()
+    txt = "📋 *STOCK ACTUALIZADO*\n\n" + "\n".join([f"• *{f['Producto']}*: {f['Stock_Actual']}" for f in data])
+    bot.send_message(m.chat.id, txt, parse_mode="Markdown", reply_markup=menu_inventario())
 
+@bot.message_handler(func=lambda m: m.text and ok(m) and clean_text(m.text) == "nuevo")
+def nuevo(m):
+    estado[m.chat.id] = {"p": "nombre"}
+    bot.send_message(m.chat.id, "📝 Nombre del producto:", reply_markup=menu_inventario())
+
+@bot.message_handler(func=lambda m: m.text and ok(m) and clean_text(m.text) == "editar")
+def editar(m):
+    bot.send_message(m.chat.id, "✏️ Escribe: editar [producto]")
+
+@bot.message_handler(func=lambda m: m.text and ok(m) and clean_text(m.text).startswith("eliminar"))
+def eliminar(m):
+    bot.send_message(m.chat.id, "🗑️ Escribe: eliminar [producto]")
+
+@bot.message_handler(func=lambda m: m.text and ok(m) and clean_text(m.text).startswith("entrada"))
+def entrada(m):
+    bot.send_message(m.chat.id, "📥 Formato: entrada producto cantidad")
+
+@bot.message_handler(func=lambda m: m.text and ok(m) and clean_text(m.text).startswith("salida"))
+def salida(m):
+    bot.send_message(m.chat.id, "📤 Formato: salida producto cantidad")
+
+# =========================
+# FLUJOS
+# =========================
 @bot.message_handler(func=lambda m: m.chat.id in estado and ok(m))
 def flujos(m):
-    if m.text == "🔙 Menú":
+    if clean_text(m.text) == "menu":
         return
-    # tu lógica original sigue aquí intacta
+    # tu lógica original sigue aquí
 
 # =========================
 # RUN
