@@ -1,22 +1,22 @@
+import os, json, time, threading
+from datetime import datetime
+from zoneinfo import ZoneInfo
 import telebot
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from datetime import datetime
-from zoneinfo import ZoneInfo
-import os, json, time, threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # =========================
-# CONFIGURACIÓN Y ENTORNO
+# CONFIGURACIÓN
 # =========================
 TOKEN = os.getenv("TOKEN")
 GOOGLE_CREDS = os.getenv("GOOGLE_CREDS")
 
 if not TOKEN or not GOOGLE_CREDS:
-    raise Exception("❌ ERROR: Configura TOKEN y GOOGLE_CREDS en Railway")
+    raise Exception("❌ Debes configurar TOKEN y GOOGLE_CREDS")
 
 # =========================
-# CONEXIÓN A GOOGLE SHEETS
+# CONEXIÓN A SHEETS
 # =========================
 def conectar_sheets():
     try:
@@ -33,22 +33,35 @@ def conectar_sheets():
         return None, None
 
 stock, mov = conectar_sheets()
+if not stock or not mov:
+    raise Exception("❌ No se pudo conectar a Google Sheets")
 
+# =========================
+# UTILIDADES
+# =========================
 def num(x):
-    try:
-        return float(str(x).replace(',', '.'))
-    except:
-        return 0
+    try: return float(str(x).replace(",", "."))
+    except: return 0
 
-# Diccionario para estados de flujos
+def existe_producto(nombre):
+    nombre = nombre.lower().strip()
+    data = stock.get_all_records()
+    return any(p["Producto"].lower() == nombre for p in data)
+
+# Diccionario de flujos
 estados_espera = {}
 
 # =========================
-# BOT Y COMANDOS
+# BOT TELEGRAM
 # =========================
 bot = telebot.TeleBot(TOKEN)
 
-# --- 1. VER TODO ---
+# --- LOG DE MENSAJES ---
+@bot.message_handler(func=lambda m: True)
+def log_msg(m):
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {m.from_user.id}: {m.text}")
+
+# --- 1. VER INVENTARIO ---
 @bot.message_handler(func=lambda m: m.text and m.text.lower() == "ver")
 def ver_todo(m):
     data = stock.get_all_records()
@@ -57,35 +70,30 @@ def ver_todo(m):
         return
     txt = "📋 *INVENTARIO ACTUAL*\n\n"
     for f in data:
-        txt += f"• *{f['Producto']}*: {f['Stock_Actual']} uds\n"
+        txt += f"• *{f['Producto']}*: {f['Stock_Actual']} uds | Nivel {f['Nivel']}, Pasillo {f['Pasillo']}, Lado {f['Lado']}, Sec. {f['Seccion']}\n"
     bot.reply_to(m, txt, parse_mode="Markdown")
 
-# --- 2. BUSCAR ---
+# --- 2. BUSCAR PRODUCTO ---
 @bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("buscar"))
 def buscar_producto(m):
-    query = m.text.lower().replace("buscar", "").strip()
+    query = m.text.lower().replace("buscar","").strip()
     if not query:
         bot.reply_to(m, "🔍 Uso: `buscar [nombre]`")
         return
-    
     data = stock.get_all_records()
     encontrados = [f for f in data if query in str(f.get("Producto","")).lower()]
-    
     if not encontrados:
-        bot.reply_to(m, f"❌ No se encontró '{query}'.")
+        bot.reply_to(m, f"❌ No se encontró '{query}'")
         return
-    
+    txt = ""
     for p in encontrados:
-        msg = (f"🔍 *PRODUCTO ENCONTRADO*\n\n"
-               f"📦 *Nombre:* {p['Producto']}\n"
-               f"🔢 *Stock:* {p['Stock_Actual']}\n"
-               f"📍 *Ubicación:* Nivel {p['Nivel']}, Pasillo {p['Pasillo']}, Lado {p['Lado']}, Sec. {p['Seccion']}")
-        bot.reply_to(m, msg, parse_mode="Markdown")
+        txt += f"📦 *{p['Producto']}* | Stock: {p['Stock_Actual']} | Nivel {p['Nivel']}, Pasillo {p['Pasillo']}, Lado {p['Lado']}, Sec. {p['Seccion']}\n"
+    bot.reply_to(m, txt, parse_mode="Markdown")
 
 # --- 3. ELIMINAR ---
 @bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("eliminar"))
 def eliminar_prod(m):
-    nombre = m.text.lower().replace("eliminar", "").strip()
+    nombre = m.text.lower().replace("eliminar","").strip()
     try:
         celda = stock.find(nombre)
         stock.delete_rows(celda.row)
@@ -94,7 +102,7 @@ def eliminar_prod(m):
         bot.reply_to(m, f"❌ No encontré '{nombre}' para eliminar.")
 
 # --- 4. ENTRADA / SALIDA ---
-@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["entrada", "salida"])
+@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["entrada","salida"])
 def iniciar_movimiento(m):
     tipo = m.text.lower()
     estados_espera[m.chat.id] = {"tipo": tipo, "paso": "nombre"}
@@ -106,36 +114,43 @@ def iniciar_nuevo(m):
     estados_espera[m.chat.id] = {"tipo": "nuevo", "paso": 1}
     bot.reply_to(m, "📝 *NUEVO PRODUCTO*\n1. Escribe el NOMBRE:")
 
-# --- MANEJADOR DE FLUJOS (ASISTENTE) ---
+# --- 6. MANEJADOR DE FLUJOS ---
 @bot.message_handler(func=lambda m: m.chat.id in estados_espera)
 def manejar_pasos(m):
     uid = m.chat.id
     est = estados_espera[uid]
-    
+
     try:
-        # Lógica para Entrada o Salida
-        if est.get("tipo") in ["entrada", "salida"]:
+        # Entrada / Salida
+        if est.get("tipo") in ["entrada","salida"]:
             if est["paso"] == "nombre":
-                est["prod_nombre"] = m.text.strip().lower()
+                est["prod"] = m.text.strip()
+                if not existe_producto(est["prod"]):
+                    bot.send_message(uid, f"❌ Producto '{est['prod']}' no existe. Usa 'nuevo' para crearlo.")
+                    del estados_espera[uid]
+                    return
                 est["paso"] = "cantidad"
-                bot.send_message(uid, f"¿Qué cantidad de '{m.text}' quieres registrar?")
+                bot.send_message(uid, f"Cantidad de '{m.text}':")
             elif est["paso"] == "cantidad":
-                cantidad = num(m.text)
-                if est["tipo"] == "salida": cantidad = -abs(cantidad)
-                
+                cant = num(m.text)
+                if est["tipo"] == "salida": cant = -abs(cant)
                 mov.append_row([
                     datetime.now(ZoneInfo("America/Santo_Domingo")).strftime("%Y-%m-%d %H:%M:%S"),
-                    est["prod_nombre"], est["tipo"].capitalize(), cantidad, m.from_user.first_name
+                    est["prod"].lower(), est["tipo"].capitalize(), cant, m.from_user.first_name
                 ], value_input_option="USER_ENTERED")
-                
-                bot.send_message(uid, f"✅ {est['tipo'].capitalize()} de {abs(cantidad)} unidades lista.")
+                bot.send_message(uid, f"✅ {est['tipo'].capitalize()} de {abs(cant)} unidades registrado.")
                 del estados_espera[uid]
 
-        # Lógica para Nuevo Producto (8 Pasos)
+        # Nuevo Producto (8 pasos)
         elif est.get("tipo") == "nuevo":
             paso = est["paso"]
             if paso == 1:
-                est["n"] = m.text.strip(); est["paso"] = 2
+                est["n"] = m.text.strip(); 
+                if existe_producto(est["n"]):
+                    bot.send_message(uid, f"❌ El producto '{est['n']}' ya existe.")
+                    del estados_espera[uid]
+                    return
+                est["paso"] = 2
                 bot.send_message(uid, "2. STOCK INICIAL (Unidades):")
             elif paso == 2:
                 est["s"] = num(m.text); est["paso"] = 3
@@ -151,35 +166,43 @@ def manejar_pasos(m):
                 bot.send_message(uid, "6. PASILLO:")
             elif paso == 6:
                 est["pas"] = m.text.strip(); est["paso"] = 7
-                bot.send_message(uid, "7. LADO (A o B):")
+                bot.send_message(uid, "7. LADO (A/B):")
             elif paso == 7:
                 est["lad"] = m.text.strip().upper(); est["paso"] = 8
                 bot.send_message(uid, "8. SECCIÓN:")
             elif paso == 8:
                 est["sec"] = m.text.strip()
-                # Guardado final
                 idx = len(stock.get_all_values()) + 1
                 fila = [
-                    est["n"], f"=SUMAR.SI(Movimientos!B:B; A{idx}; Movimientos!D:D)", 
+                    est["n"],
+                    f"=SUMAR.SI(Movimientos!B:B; A{idx}; Movimientos!D:D)",
                     est["niv"], est["pas"], est["lad"], est["sec"], "vickniel0316@gmail.com",
                     f"=CONTAR.SI.CONJUNTO(Movimientos!B:B; A{idx}; Movimientos!A:A; \">\"&HOY()-30)",
-                    f"=SIERROR(ABS(B{idx})/H{idx}; 0)", est["t"], est["u"]
+                    f"=SIERROR(ABS(B{idx})/H{idx};0)",
+                    est["t"], est["u"]
                 ]
                 stock.append_row(fila, value_input_option="USER_ENTERED")
-                mov.append_row([datetime.now(ZoneInfo("America/Santo_Domingo")).strftime("%Y-%m-%d %H:%M:%S"), est["n"].lower(), "Carga Inicial", est["s"], m.from_user.first_name], value_input_option="USER_ENTERED")
+
+                if est["s"] > 0:
+                    mov.append_row([
+                        datetime.now(ZoneInfo("America/Santo_Domingo")).strftime("%Y-%m-%d %H:%M:%S"),
+                        est["n"].lower(), "Carga Inicial", est["s"], m.from_user.first_name
+                    ], value_input_option="USER_ENTERED")
+
                 bot.send_message(uid, f"✅ '{est['n']}' guardado con éxito.")
                 del estados_espera[uid]
+
     except Exception as e:
         bot.send_message(uid, f"❌ Error: {e}")
-        del estados_espera[uid]
+        if uid in estados_espera: del estados_espera[uid]
 
 # =========================
-# KEEP ALIVE (Railway)
+# KEEP ALIVE RAILWAY
 # =========================
 class Web(BaseHTTPRequestHandler):
     def do_GET(self): self.send_response(200); self.end_headers(); self.wfile.write(b"OK")
-def run_w(): HTTPServer(("0.0.0.0", int(os.environ.get("PORT", 8080))), Web).serve_forever()
-threading.Thread(target=run_w, daemon=True).start()
+def run_web(): HTTPServer(("0.0.0.0", int(os.environ.get("PORT",8080))), Web).serve_forever()
+threading.Thread(target=run_web, daemon=True).start()
 
-print("🚀 Bot Vickniel iniciado SIN restricciones...")
-bot.infinity_polling(timeout=10, long_polling_timeout=5)
+print("🚀 Bot mejorado iniciado correctamente")
+bot.infinity_polling(timeout=20, long_polling_timeout=30)
