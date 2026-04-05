@@ -30,7 +30,9 @@ mov = ss.worksheet("Movimientos")
 # =========================
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200); self.end_headers(); self.wfile.write(b"OK")
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
 
 def web():
     port = int(os.environ.get("PORT", 8080))
@@ -52,29 +54,56 @@ def num(x):
 estado = {}
 
 # =========================
-# MENÚ
+# MENÚ (ARREGLADO)
 # =========================
 def menu_principal():
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.row("📦 Pedidos","📋 Ver")
-    markup.row("➕ Nuevo","✏️ Editar")
-    markup.row("🗑️ Eliminar")
-    markup.row("📥 Entrada","📤 Salida")
-    markup.row("🔙 Menú")
+
+    markup.row(
+        KeyboardButton("📦 Pedidos"),
+        KeyboardButton("📋 Ver")
+    )
+    markup.row(
+        KeyboardButton("➕ Nuevo"),
+        KeyboardButton("✏️ Editar")
+    )
+    markup.row(
+        KeyboardButton("🗑️ Eliminar")
+    )
+    markup.row(
+        KeyboardButton("📥 Entrada"),
+        KeyboardButton("📤 Salida")
+    )
+    markup.row(
+        KeyboardButton("🔙 Menú")
+    )
+
     return markup
 
 @bot.message_handler(commands=['start'])
 def start(m):
-    bot.send_message(m.chat.id, "👋 Sistema listo", reply_markup=menu_principal())
+    bot.send_message(
+        m.chat.id,
+        "👋 Sistema listo",
+        reply_markup=menu_principal()
+    )
 
+# =========================
+# VOLVER AL MENÚ
+# =========================
 @bot.message_handler(func=lambda m: m.text == "🔙 Menú" and ok(m))
 def volver_menu(m):
     if m.chat.id in estado:
         del estado[m.chat.id]
-    bot.send_message(m.chat.id, "🏠 Menú principal", reply_markup=menu_principal())
+
+    bot.send_message(
+        m.chat.id,
+        "🏠 Menú principal",
+        reply_markup=menu_principal()
+    )
 
 # =========================
-# PEDIDOS (CORREGIDO)
+# PEDIDOS (OPTIMIZADO)
 # =========================
 @bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower() in ["pedidos","📦 pedidos"])
 def pedidos(m):
@@ -94,7 +123,7 @@ def pedidos(m):
 
         # 🆕 NUEVOS
         if dias < 3:
-            if s < (2 * u):  # 🔥 filtro
+            if s < (2 * u):
                 objetivo = 5 * u
                 cajas = math.ceil((objetivo - s) / u)
 
@@ -123,20 +152,24 @@ def pedidos(m):
             txt += f"🚚 Pedir: *{cajas} cajas*\n\n"
             hay = True
 
-    bot.reply_to(m, txt if hay else "✅ Inventario saludable", parse_mode="Markdown")
+    bot.send_message(
+        m.chat.id,
+        txt if hay else "✅ Inventario saludable",
+        parse_mode="Markdown",
+        reply_markup=menu_principal()
+    )
 
 # =========================
-# RESTO DEL BOT (SIN CAMBIOS)
+# FLUJOS (NO TOCADOS)
 # =========================
-
 @bot.message_handler(func=lambda m: m.chat.id in estado and ok(m))
 def flujos(m):
     if m.text == "🔙 Menú":
         return
-    # 👇 aquí sigue tu lógica original intacta
+    # tu lógica original aquí
 
 # =========================
-# START LOOP
+# RUN
 # =========================
 bot.remove_webhook()
 
