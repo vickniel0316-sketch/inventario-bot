@@ -182,8 +182,20 @@ def flujos(m):
     pasos_n = [("nombre","stock","🔢 Stock inicial:"), ("stock","nivel","🏢 Nivel:"), ("nivel","pasillo","🛤️ Pasillo:"), ("pasillo","lado","↔️ Lado:"), ("lado","sec","📍 Sección:"), ("sec","caja","📦 Und/Caja:"), ("caja","tiempo","⏱️ Días entrega:"), ("tiempo","correo","📧 Correo:")]
     for act, sig, msg in pasos_n:
         if paso == act:
-            e[act] = t if act not in ["stock","caja","tiempo"] else num(t)
-            e["p"] = sig; bot.reply_to(m, msg); return
+            # 🔥 VALIDACIÓN DE DUPLICADO SOLO AQUÍ
+            if act == "nombre":
+                nombre = t.strip().lower()
+                if buscar_fila(nombre):
+                    bot.reply_to(m, "❌ Este producto ya existe.")
+                    del estado[m.chat.id]
+                    return
+                e[act] = nombre
+            else:
+                e[act] = t if act not in ["stock","caja","tiempo"] else num(t)
+
+            e["p"] = sig
+            bot.reply_to(m, msg)
+            return
 
     if paso == "correo":
         idx = len(stock.get_all_values()) + 1
