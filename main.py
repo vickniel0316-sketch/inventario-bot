@@ -230,6 +230,32 @@ def seleccionar_opcion(m):
         bot.reply_to(m, "❌ Responde con un número válido.")
 
 # =========================
+# 🔥 NUEVO HANDLER: AGREGAR PRODUCTO CON FÓRMULAS
+# =========================
+@bot.message_handler(func=lambda m: ok(m) and m.text.lower().startswith("nuevo "))
+def nuevo_producto(m):
+    try:
+        nombre_producto = m.text[6:].strip()
+        if not nombre_producto:
+            bot.reply_to(m, "❌ Debes indicar el nombre del producto después de 'nuevo'.")
+            return
+
+        # Agregar producto al final de Stock
+        ultima_fila = len(stock.get_all_values()) + 1
+        stock.update_cell(ultima_fila, 1, nombre_producto)  # Columna A = producto
+
+        # Columna H = Dias
+        stock.update_cell(ultima_fila, 8, f'=SI.ERROR(MIN(6, HOY() - QUERY(Movimientos!A:D, "select A where B = \'\" & A{ultima_fila} & \"\' order by A asc limit 1", 0)), 0)')
+
+        # Columna I = Consumo_dia
+        stock.update_cell(ultima_fila, 9, f'=ABS(SUMAR.SI.CONJUNTO(Movimientos!D:D, Movimientos!B:B, A{ultima_fila}, Movimientos!D:D, "<0"))')
+
+        bot.reply_to(m, f"✅ Producto '{nombre_producto}' agregado con fórmulas en H e I.")
+
+    except Exception as e:
+        bot.reply_to(m, f"❌ Error al agregar el producto: {e}")
+
+# =========================
 # START
 # =========================
 bot.remove_webhook()
