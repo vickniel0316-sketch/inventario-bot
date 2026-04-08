@@ -28,9 +28,7 @@ mov = ss.worksheet("Movimientos")
 # =========================
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
+        self.send_response(200); self.end_headers(); self.wfile.write(b"OK")
 
 def web():
     port = int(os.environ.get("PORT", 8080))
@@ -43,6 +41,7 @@ threading.Thread(target=web, daemon=True).start()
 # =========================
 bot = telebot.TeleBot(TOKEN)
 estado = {}
+opciones_temp = {}  # almacenamiento temporal para selección de coincidencias múltiples
 
 def ok(m): return m.from_user.id == CHAT_ID
 
@@ -50,15 +49,35 @@ def num(x):
     try: return float(str(x).replace(',', '.'))
     except: return 0
 
-def buscar_fila(nombre_buscado):
-    col_a = stock.col_values(1)
-    for i, valor in enumerate(col_a):
-        if valor.strip().lower() == nombre_buscado.strip().lower():
+# 🔥 Búsqueda inteligente (nombre o código, múltiples coincidencias)
+def buscar_fila_general(valor):
+    col_productos = stock.col_values(1)
+    col_codigos = stock.col_values(14)  # si existe código
+
+    valor = valor.strip().lower()
+    palabras = valor.split()
+    coincidencias = []
+
+    for i in range(1, len(col_productos)):
+        nombre = col_productos[i].strip().lower()
+        codigo = str(col_codigos[i]).strip() if i < len(col_codigos) else ""
+
+        if valor == codigo:
             return i + 1
+
+        if all(p in nombre for p in palabras):
+            coincidencias.append(i + 1)
+
+    if len(coincidencias) == 1:
+        return coincidencias[0]
+
+    if len(coincidencias) > 1:
+        return coincidencias
+
     return None
 
 # =========================
-# PEDIDOS
+# PEDIDOS (SIN CAMBIOS)
 # =========================
 @bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower() == "pedidos")
 def pedidos(m):
@@ -98,107 +117,193 @@ def pedidos(m):
     bot.reply_to(m, txt if hay else "✅ Inventario saludable", parse_mode="Markdown")
 
 # =========================
-# GESTIÓN
+# MOVIMIENTOS (Entrada / Salida / Ajuste)
 # =========================
-@bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower().startswith("eliminar"))
-def eliminar(m):
-    prod = m.text.lower().replace("eliminar", "").strip()
-    fila = buscar_fila(prod)
-    if fila:
-        stock.delete_rows(fila)
-        bot.reply_to(m, f"🗑️ *{prod}* eliminado correctamente.", parse_mode="Markdown")
-    else:
-        bot.reply_to(m, "❌ Producto no encontrado.")
-
-@bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower().startswith("editar"))
-def editar(m):
-    prod = m.text.lower().replace("editar", "").strip()
-    fila = buscar_fila(prod)
-    if fila:
-        estado[m.chat.id] = {"p": "edit_opcion", "prod": prod, "fila": fila}
-        bot.reply_to(m, f"⚙️ *EDITAR: {prod.upper()}*\n\n1. Ubicación\n2. Tiempo Entrega\n3. Unidades/Caja\n\nResponde con el número.", parse_mode="Markdown")
-    else:
-        bot.reply_to(m, "❌ No encontrado.")
-
-@bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower() == "ver")
-def ver(m):
-    data = stock.get_all_records()
-    txt = "📋 *RESUMEN STOCK*\n\n" + "\n".join([f"• *{f['Producto']}*: {int(num(f['Stock_Actual']))}" for f in data])
-    bot.reply_to(m, txt, parse_mode="Markdown")
-
-@bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower().startswith("buscar"))
-def buscar(m):
-    q = m.text.lower().replace("buscar", "").strip()
-    encontrados = [f for f in stock.get_all_records() if q in str(f['Producto']).lower()]
-    if encontrados:
-        for i in encontrados:
-            bot.reply_to(m, f"📦 *{i['Producto']}*\n🔢 Stock: {i['Stock_Actual']}\n📍 {i.get('Nivel','')} {i.get('Pasillo','')} {i.get('Lado','')} {i.get('Seccion','')}", parse_mode="Markdown")
-    else:
-        bot.reply_to(m, "❌ Sin resultados.")
-
-# =========================
-# MOVIMIENTOS
-# =========================
-@bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower().startswith(("entrada","salida")))
+@bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower().startswith(("entrada","salida","ajuste")))
 def movimientos(m):
     try:
         p = m.text.split()
         tipo = p[0].lower()
         cant = num(p[-1])
-        prod = " ".join(p[1:-1]).lower()
-        fila = buscar_fila(prod)
-        if not fila:
+        prod = " ".join(p[1:-1]).strip()
+
+        resultado = buscar_fila_general(prod)
+
+        if resultado is None:
             bot.reply_to(m, f"❌ El producto '{prod}' no existe.")
             return
+
+        # 🔥 múltiples coincidencias
+        if isinstance(resultado, list):
+            opciones = resultado[:5]  # máximo 5 opciones
+            opciones_temp[m.chat.id] = {
+                "opciones": opciones,
+                "tipo": tipo,
+                "cantidad": cant
+            }
+            texto = "⚠️ Varias coincidencias:\n\n"
+            for idx, f in enumerate(opciones, 1):
+                nombre = stock.cell(f, 1).value
+                texto += f"{idx}. {nombre}\n"
+            texto += "\nResponde con el número."
+            bot.reply_to(m, texto)
+            return
+
+        fila = resultado
+        prod_real = stock.cell(fila, 1).value
+
+        if tipo == "entrada":
+            valor = cant
+            tipo_txt = "Entrada"
+        elif tipo == "salida":
+            valor = -abs(cant)
+            tipo_txt = "Salida"
+        elif tipo == "ajuste":
+            stock_actual = num(stock.cell(fila, 2).value)
+            valor = cant - stock_actual
+            tipo_txt = "Ajuste"
+
         mov.append_row([
             datetime.now(ZoneInfo("America/Santo_Domingo")).strftime("%Y-%m-%d %H:%M:%S"),
-            prod,
-            tipo.capitalize(),
-            cant if tipo=="entrada" else -abs(cant),
+            prod_real.lower(),
+            tipo_txt,
+            valor,
             m.from_user.first_name
         ], value_input_option="USER_ENTERED")
-        bot.reply_to(m, f"✅ {tipo.capitalize()} de {int(cant)} unidades registrada para *{prod}*.", parse_mode="Markdown")
+
+        bot.reply_to(m, f"✅ {tipo_txt} aplicado a *{prod_real}*.", parse_mode="Markdown")
+
     except:
-        bot.reply_to(m, "❌ Formato: entrada [producto] [cantidad]")
+        bot.reply_to(m, "❌ Formato: `entrada [producto] [cantidad]`")
 
 # =========================
-# FLUJOS (NUEVO PRODUCTO PASO A PASO CON FORMULAS H E I)
+# SELECCIÓN DE COINCIDENCIAS MÚLTIPLES
+# =========================
+@bot.message_handler(func=lambda m: m.chat.id in opciones_temp and ok(m))
+def seleccionar_opcion(m):
+    try:
+        seleccion = int(m.text.strip()) - 1
+        data = opciones_temp[m.chat.id]
+        opciones = data["opciones"]
+
+        if seleccion < 0 or seleccion >= len(opciones):
+            bot.reply_to(m, "❌ Opción inválida.")
+            return
+
+        fila = opciones[seleccion]
+        tipo = data["tipo"]
+        cant = data["cantidad"]
+        prod = stock.cell(fila, 1).value
+
+        if tipo == "entrada":
+            valor = cant
+            tipo_txt = "Entrada"
+        elif tipo == "salida":
+            valor = -abs(cant)
+            tipo_txt = "Salida"
+        elif tipo == "ajuste":
+            stock_actual = num(stock.cell(fila, 2).value)
+            valor = cant - stock_actual
+            tipo_txt = "Ajuste"
+
+        mov.append_row([
+            datetime.now(ZoneInfo("America/Santo_Domingo")).strftime("%Y-%m-%d %H:%M:%S"),
+            prod.lower(),
+            tipo_txt,
+            valor,
+            m.from_user.first_name
+        ], value_input_option="USER_ENTERED")
+
+        bot.reply_to(m, f"✅ {tipo_txt} aplicado a *{prod}*.", parse_mode="Markdown")
+        del opciones_temp[m.chat.id]
+
+    except:
+        bot.reply_to(m, "❌ Responde con un número válido.")
+
+# =========================
+# FLUJO NUEVO PRODUCTO (restaurado + fórmulas H e I)
 # =========================
 @bot.message_handler(func=lambda m: ok(m) and m.text.lower() == "nuevo")
-def nuevo(m):
-    estado[m.chat.id] = {"p": "nombre"}
-    bot.reply_to(m, "📝 Nombre del producto:")
+def nuevo_producto_inicio(m):
+    chat_id = m.chat.id
+    estado[chat_id] = {"paso": "nombre"}  # inicia flujo
+    bot.reply_to(m, "📝 Ingresa el nombre del producto:")
 
-@bot.message_handler(func=lambda m: m.chat.id in estado and ok(m))
-def flujos(m):
-    e = estado[m.chat.id]
-    t = m.text.strip()
-    paso = e["p"]
+@bot.message_handler(func=lambda m: ok(m) and m.chat.id in estado)
+def nuevo_producto_flujo(m):
+    chat_id = m.chat.id
+    data = estado[chat_id]
+    paso = data["paso"]
+    texto = m.text.strip()
 
     if paso == "nombre":
-        e["nombre"] = t; e["p"] = "stock"; bot.reply_to(m, "📦 Stock inicial:"); return
+        data["nombre"] = texto
+        data["paso"] = "stock"
+        bot.reply_to(m, "📦 Ingresa el Stock inicial:")
+        return
     if paso == "stock":
-        e["stock"] = num(t); e["p"] = "nivel"; bot.reply_to(m, "🏢 Nivel:"); return
+        data["stock"] = num(texto)
+        data["paso"] = "nivel"
+        bot.reply_to(m, "📌 Ingresa el Nivel:")
+        return
     if paso == "nivel":
-        e["nivel"] = t; e["p"] = "pasillo"; bot.reply_to(m, "🛤️ Pasillo:"); return
+        data["nivel"] = texto
+        data["paso"] = "pasillo"
+        bot.reply_to(m, "➡️ Ingresa el Pasillo:")
+        return
     if paso == "pasillo":
-        e["pasillo"] = t; e["p"] = "lado"; bot.reply_to(m, "↔️ Lado:"); return
+        data["pasillo"] = texto
+        data["paso"] = "lado"
+        bot.reply_to(m, "↔️ Ingresa el Lado:")
+        return
     if paso == "lado":
-        e["lado"] = t; e["p"] = "seccion"; bot.reply_to(m, "📍 Sección:"); return
+        data["lado"] = texto
+        data["paso"] = "seccion"
+        bot.reply_to(m, "🔢 Ingresa la Sección:")
+        return
     if paso == "seccion":
-        e["seccion"] = t; e["p"] = "email"; bot.reply_to(m, "📧 Email:"); return
+        data["seccion"] = texto
+        data["paso"] = "email"
+        bot.reply_to(m, "📧 Ingresa el Email:")
+        return
     if paso == "email":
-        e["email"] = t
-        idx = len(stock.get_all_values()) + 1
-        stock.update(f"A{idx}:G{idx}", [[
-            e["nombre"], e["stock"], e["nivel"],
-            e["pasillo"], e["lado"], e["seccion"], e["email"]
+        data["email"] = texto
+        data["paso"] = "unidades_caja"
+        bot.reply_to(m, "📦 Ingresa Unidades por Caja:")
+        return
+    if paso == "unidades_caja":
+        data["caja"] = num(texto)
+        data["paso"] = "tiempo_entrega"
+        bot.reply_to(m, "⏱️ Ingresa Tiempo de Entrega (días):")
+        return
+    if paso == "tiempo_entrega":
+        data["tiempo"] = num(texto)
+
+        # Agregar fila al final de Stock con todos los datos
+        ultima_fila = len(stock.get_all_values()) + 1
+        stock.update(f"A{ultima_fila}:K{ultima_fila}", [[
+            data["nombre"], data["stock"], data["nivel"],
+            data["pasillo"], data["lado"], data["seccion"], data["email"],
+            0, 0,  # H e I se llenarán con fórmulas
+            data["tiempo"], data["caja"]
         ]])
-        # 🔥 Fórmulas automáticas H e I
-        stock.update_cell(idx, 8, f'=SI.ERROR(MIN(6, HOY() - QUERY(Movimientos!A:D, "select A where B = \'" & A{idx} & "\' order by A asc limit 1", 0)), 0)')
-        stock.update_cell(idx, 9, f'=SI(H{idx}<3; 0; SI.ERROR(ABS(SUMAR.SI.CONJUNTO(Movimientos!D:D; Movimientos!B:B; A{idx}; Movimientos!D:D; "<0")) / H{idx}; 0))')
-        bot.reply_to(m, f"✅ Producto '{e['nombre']}' agregado con fórmulas en H e I.")
-        del estado[m.chat.id]
+
+        # Agregar fórmulas automáticamente en H e I
+        stock.update_cell(ultima_fila, 8, f'=SI.ERROR(MIN(6, HOY() - QUERY(Movimientos!A:D, "select A where B = \'\" & A{ultima_fila} & \"\' order by A asc limit 1", 0)), 0)')
+        stock.update_cell(ultima_fila, 9, f'=SI.ERROR(ABS(SUMAR.SI.CONJUNTO(Movimientos!D:D, Movimientos!B:B, A{ultima_fila}, Movimientos!D:D, "<0")), 0)')
+
+        # Registrar stock inicial en Movimientos si es >0
+        if data["stock"] > 0:
+            mov.append_row([
+                datetime.now(ZoneInfo("America/Santo_Domingo")).strftime("%Y-%m-%d %H:%M:%S"),
+                data["nombre"].lower(),
+                "Carga Inicial",
+                data["stock"],
+                m.from_user.first_name
+            ], value_input_option="USER_ENTERED")
+
+        bot.reply_to(m, f"✅ Producto '{data['nombre']}' agregado con fórmulas en H e I.")
+        del estado[chat_id]
 
 # =========================
 # START
