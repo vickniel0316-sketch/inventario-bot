@@ -43,7 +43,7 @@ threading.Thread(target=web, daemon=True).start()
 # =========================
 bot = telebot.TeleBot(TOKEN)
 estado = {}
-opciones_temp = {}  # para selección múltiple
+opciones_temp = {}
 
 def ok(m): return m.from_user.id == CHAT_ID
 
@@ -51,44 +51,94 @@ def num(x):
     try: return float(str(x).replace(',', '.'))
     except: return 0
 
-# Búsqueda exacta por nombre para editar
-def buscar_fila(nombre_buscado):
-    col_a = stock.col_values(1)
-    for i, valor in enumerate(col_a):
-        if valor.strip().lower() == nombre_buscado.strip().lower():
-            return i + 1
-    return None
+# =========================
+# 🔥 BUSQUEDA INTELIGENTE
+# =========================
+indice = {}
+productos_cache = []
+last_update = 0
+CACHE_TTL = 60
 
-# Búsqueda inteligente para movimientos
-def buscar_fila_general(valor):
-    col_productos = stock.col_values(1)
-    col_codigos = stock.col_values(14)
-    valor = valor.strip().lower()
-    palabras = valor.split()
-    coincidencias = []
+def normalizar(texto):
+    texto = str(texto).lower().strip()
+    reemplazos = {
+        "acción": "accion",
+        "á": "a", "é": "e", "í": "i", "ó": "o", "ú": "u"
+    }
+    for k, v in reemplazos.items():
+        texto = texto.replace(k, v)
+    return texto
 
-    for i in range(1, len(col_productos)):
-        nombre = col_productos[i].strip().lower()
-        codigo = str(col_codigos[i]).strip()
-        if valor == codigo:
-            return i + 1
-        if all(p in nombre for p in palabras):
-            coincidencias.append(i + 1)
+def tokenizar(texto):
+    texto = normalizar(texto)
+    palabras = texto.split()
+    tokens = set()
 
-    if len(coincidencias) == 1:
-        return coincidencias[0]
-    if len(coincidencias) > 1:
-        return coincidencias
-    return None
+    for p in palabras:
+        tokens.add(p)
+        tokens.add(p[:3])
+
+        if any(c.isdigit() for c in p):
+            tokens.add(''.join(filter(str.isdigit, p)))
+
+    return tokens
+
+def construir_indice():
+    global indice, productos_cache, last_update
+
+    data = stock.get_all_values()
+    productos_cache = data
+    indice = {}
+
+    for i in range(1, len(data)):
+        nombre = data[i][0]
+        tokens = tokenizar(nombre)
+
+        for t in tokens:
+            if t not in indice:
+                indice[t] = set()
+            indice[t].add(i + 1)
+
+    last_update = time.time()
+
+def obtener_indice():
+    global last_update
+    if time.time() - last_update > CACHE_TTL:
+        construir_indice()
+    return indice
+
+def buscar_producto_inteligente(query):
+    idx = obtener_indice()
+    palabras = tokenizar(query)
+
+    resultados = None
+
+    for p in palabras:
+        if p in idx:
+            if resultados is None:
+                resultados = idx[p].copy()
+            else:
+                resultados &= idx[p]
+
+    if not resultados:
+        return None
+
+    resultados = list(resultados)
+
+    if len(resultados) == 1:
+        return resultados[0]
+
+    return resultados[:5]
 
 # =========================
-# PEDIDOS
+# PEDIDOS (MEJORADO)
 # =========================
 @bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower() == "pedidos")
 def pedidos(m):
     data = stock.get_all_records()
     txt = "📦 *SUGERENCIA DE PEDIDOS*\n\n"
     hay = False
+
     for f in data:
         s = num(f.get('Stock_Actual', 0))
         c = num(f.get('Consumo_dia', 0))
@@ -96,22 +146,45 @@ def pedidos(m):
         u = num(f.get('Unidades_Caja', 1))
         dias = num(f.get('Dias', 0))
 
-        if u <= 0: continue
-        if dias < 3 and s < (2 * u):
-            objetivo = 5 * u
-            cajas = math.ceil((objetivo - s) / u)
-            if cajas > 0:
-                txt += f"🆕 *{f['Producto']}*\n⚠️ Bajo stock: {int(s)}\n🚚 Pedir: *{cajas} cajas*\n\n"
-                hay = True
+        if u <= 0:
             continue
-        if c <= 0: continue
-        stock_critico = c * (t + 2)
-        objetivo = c * 15
-        if s <= stock_critico:
-            cajas = math.ceil((objetivo - s) / u)
-            if cajas <= 0: cajas = 1
-            txt += f"📦 *{f['Producto']}*\n⚠️ Bajo stock: {int(s)}\n🚚 Pedir: *{cajas} cajas*\n\n"
+
+        # 🆕 PRODUCTO NUEVO
+        if dias < 3:
+            if s < (2 * u):
+                objetivo = 5 * u
+                cajas = math.ceil((objetivo - s) / u)
+
+                if cajas > 0:
+                    txt += f"🆕 *{f['Producto']}*\n⚠️ Stock bajo (nuevo): {int(s)}\n🚚 Pedir: *{cajas} cajas*\n\n"
+                    hay = True
+            continue
+
+        # 📦 PRODUCTO NORMAL
+        punto_reorden = c * (t + 2)
+
+        if s <= punto_reorden:
+            stock_objetivo = c * 15
+            cajas = math.ceil((stock_objetivo - s) / u)
+
+            if cajas <= 0:
+                cajas = 1
+
+            # 🔥 PRIORIDAD
+            if s <= c * (t + 1):
+                icono = "🚨"
+                estado_txt = "URGENTE"
+            else:
+                icono = "⚠️"
+                estado_txt = "PRONTO"
+
+            txt += f"{icono} *{f['Producto']}*\n"
+            txt += f"Estado: {estado_txt}\n"
+            txt += f"Stock: {int(s)}\n"
+            txt += f"🚚 Pedir: *{cajas} cajas*\n\n"
+
             hay = True
+
     bot.reply_to(m, txt if hay else "✅ Inventario saludable", parse_mode="Markdown")
 
 # =========================
@@ -124,10 +197,13 @@ def movimientos(m):
         tipo = p[0].lower()
         cant = num(p[-1])
         prod = " ".join(p[1:-1]).strip()
-        resultado = buscar_fila_general(prod)
+
+        resultado = buscar_producto_inteligente(prod)
+
         if resultado is None:
             bot.reply_to(m, f"❌ El producto '{prod}' no existe.")
             return
+
         if isinstance(resultado, list):
             opciones = resultado[:5]
             opciones_temp[m.chat.id] = {"opciones": opciones, "tipo": tipo, "cantidad": cant}
@@ -163,11 +239,11 @@ def movimientos(m):
 
         bot.reply_to(m, f"✅ {tipo_txt} aplicado a *{prod_real}*.", parse_mode="Markdown")
 
-    except:
-        bot.reply_to(m, "❌ Formato: `entrada [producto] [cantidad]`")
+    except Exception as e:
+        bot.reply_to(m, f"❌ Error: {e}")
 
 # =========================
-# SELECCIÓN MÚLTIPLE PARA MOVIMIENTOS
+# SELECCIÓN MÚLTIPLE
 # =========================
 @bot.message_handler(func=lambda m: m.chat.id in opciones_temp and ok(m))
 def seleccionar_opcion(m):
@@ -175,9 +251,11 @@ def seleccionar_opcion(m):
         seleccion = int(m.text.strip()) - 1
         data = opciones_temp[m.chat.id]
         opciones = data["opciones"]
+
         if seleccion < 0 or seleccion >= len(opciones):
             bot.reply_to(m, "❌ Opción inválida.")
             return
+
         fila = opciones[seleccion]
         tipo = data["tipo"]
         cant = data["cantidad"]
@@ -209,36 +287,11 @@ def seleccionar_opcion(m):
         bot.reply_to(m, "❌ Responde con un número válido.")
 
 # =========================
-# EDITAR (original, sin cambios)
-# =========================
-@bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower().startswith("editar"))
-def editar(m):
-    prod = m.text.lower().replace("editar", "").strip()
-    fila = buscar_fila(prod)
-    if fila:
-        estado[m.chat.id] = {"p": "edit_opcion", "prod": prod, "fila": fila}
-        bot.reply_to(m, f"⚙️ *EDITAR: {prod.upper()}*\n\n1. Ubicación\n2. Tiempo Entrega\n3. Unidades/Caja\n\nResponde con el número.", parse_mode="Markdown")
-    else:
-        bot.reply_to(m, "❌ No encontrado.")
-
-# =========================
-# VER (original, tal cual)
-# =========================
-@bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower() == "ver")
-def ver(m):
-    data = stock.get_all_records()
-    txt = "📋 *RESUMEN STOCK*\n\n" + "\n".join([
-        f"• *{f['Producto']}*: {int(num(f['Stock_Actual']))}" for f in data
-    ])
-    bot.reply_to(m, txt, parse_mode="Markdown")
-
-# =========================
-# NUEVO PRODUCTO (paso a paso con fórmulas)
+# NUEVO PRODUCTO
 # =========================
 @bot.message_handler(func=lambda m: ok(m) and m.text.lower() == "nuevo")
 def nuevo_producto_inicio(m):
-    chat_id = m.chat.id
-    estado[chat_id] = {"paso": "nombre"}
+    estado[m.chat.id] = {"paso": "nombre"}
     bot.reply_to(m, "📝 Ingresa el nombre del producto:")
 
 @bot.message_handler(func=lambda m: ok(m) and m.chat.id in estado)
@@ -281,21 +334,24 @@ def nuevo_producto_flujo(m):
     if paso == "email":
         data["email"] = texto
         ultima_fila = len(stock.get_all_values()) + 1
+
         stock.update(f"A{ultima_fila}:G{ultima_fila}", [[
             data["nombre"], data["stock"], data["nivel"],
             data["pasillo"], data["lado"], data["seccion"], data["email"]
         ]])
-        # fórmulas H e I
-        stock.update_cell(ultima_fila, 8, f'=SI.ERROR(MIN(6, HOY() - QUERY(Movimientos!A:D, "select A where B = \'\" & A{ultima_fila} & \"\' order by A asc limit 1", 0)), 0)')
-        stock.update_cell(ultima_fila, 9, f'=ABS(SUMAR.SI.CONJUNTO(Movimientos!D:D, Movimientos!B:B, A{ultima_fila}, Movimientos!D:D, "<0"))')
 
         bot.reply_to(m, f"✅ Producto '{data['nombre']}' agregado.")
+
+        construir_indice()
+
         del estado[chat_id]
 
 # =========================
 # START
 # =========================
 bot.remove_webhook()
+construir_indice()
+
 while True:
     try:
         bot.polling(none_stop=True)
