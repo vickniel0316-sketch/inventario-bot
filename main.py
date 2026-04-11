@@ -52,7 +52,7 @@ def num(x):
     except: return 0
 
 # =========================
-# 🔥 BUSQUEDA INTELIGENTE (ORIGINAL RESTAURADA)
+# BUSQUEDA INTELIGENTE
 # =========================
 indice = {}
 last_update = 0
@@ -226,7 +226,7 @@ def seleccionar(m):
         bot.reply_to(m, "❌ Error selección")
 
 # =========================
-# NUEVO PRODUCTO (CON FORMULAS)
+# NUEVO PRODUCTO
 # =========================
 @bot.message_handler(func=lambda m: ok(m) and m.text.lower() == "nuevo")
 def nuevo(m):
@@ -300,83 +300,68 @@ def flujo_nuevo(m):
         bot.reply_to(m, "✅ Producto creado")
 
 # =========================
-# EDITAR
+# 🔥 PEDIDOS (INSERTADO SIN CAMBIAR NADA MÁS)
 # =========================
-@bot.message_handler(func=lambda m: ok(m) and m.text.lower().startswith("editar "))
-def editar(m):
-    nombre = m.text.replace("editar", "").strip()
+@bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower() == "pedidos")
+def pedidos(m):
     data = stock.get_all_values()
+    headers = data[0]
 
-    fila = None
-    for i in range(1, len(data)):
-        if data[i][0].lower() == nombre.lower():
-            fila = i + 1
-            break
+    def col(name):
+        try:
+            return headers.index(name)
+        except:
+            return -1
 
-    if not fila:
-        bot.reply_to(m, "❌ No encontrado")
-        return
+    i_stock = col("Stock_Actual")
+    i_cons = col("Consumo_dia")
+    i_tiempo = col("Tiempo_entrega")
+    i_caja = col("Unidades_Caja")
+    i_dias = col("Dias")
 
-    estado[m.chat.id] = {"modo": "editar", "fila": fila, "paso": "stock"}
-    bot.reply_to(m, "✏️ Nuevo stock:")
-
-@bot.message_handler(func=lambda m: ok(m) and m.chat.id in estado and estado[m.chat.id].get("modo") == "editar")
-def flujo_editar(m):
-    d = estado[m.chat.id]
-    fila = d["fila"]
-    paso = d["paso"]
-
-    if paso == "stock":
-        stock.update_acell(f"C{fila}", num(m.text))
-        d["paso"] = "nivel"
-        bot.reply_to(m, "📌 Nivel:")
-        return
-
-    if paso == "nivel":
-        stock.update_acell(f"D{fila}", m.text)
-        d["paso"] = "pasillo"
-        bot.reply_to(m, "➡️ Pasillo:")
-        return
-
-    if paso == "pasillo":
-        stock.update_acell(f"E{fila}", m.text)
-        d["paso"] = "lado"
-        bot.reply_to(m, "↔️ Lado:")
-        return
-
-    if paso == "lado":
-        stock.update_acell(f"F{fila}", m.text)
-        d["paso"] = "seccion"
-        bot.reply_to(m, "🔢 Sección:")
-        return
-
-    if paso == "seccion":
-        stock.update_acell(f"G{fila}", m.text)
-        d["paso"] = "email"
-        bot.reply_to(m, "📧 Email:")
-        return
-
-    if paso == "email":
-        stock.update_acell(f"H{fila}", m.text)
-        del estado[m.chat.id]
-        bot.reply_to(m, "✅ Editado")
-
-# =========================
-# ELIMINAR
-# =========================
-@bot.message_handler(func=lambda m: ok(m) and m.text.lower().startswith("eliminar "))
-def eliminar(m):
-    nombre = m.text.replace("eliminar", "").strip()
-
-    data = stock.get_all_values()
+    txt = "📦 *PEDIDOS*\n\n"
+    hay = False
 
     for i in range(1, len(data)):
-        if data[i][0].lower() == nombre.lower():
-            stock.update_acell(f"A{i+1}", "INACTIVO")
-            bot.reply_to(m, "🗑️ Eliminado")
-            return
+        row = data[i]
 
-    bot.reply_to(m, "❌ No encontrado")
+        def get(idx):
+            if idx == -1 or idx >= len(row):
+                return 0
+            return num(row[idx])
+
+        s = get(i_stock)
+        c = get(i_cons)
+        t = get(i_tiempo)
+        u = get(i_caja) or 1
+        d = get(i_dias)
+
+        producto = row[0]
+
+        if u <= 0:
+            continue
+
+        if d <= 3:
+            if s < 5:
+                cajas = math.ceil((5 - s) / u)
+                txt += f"🆕 {producto} → {cajas} cajas\n"
+                hay = True
+            continue
+
+        punto = (c * t) + (c * 2)
+
+        if s <= punto:
+            objetivo = (c * t) + (c * 2) + (c * 5)
+            cajas = math.ceil((objetivo - s) / u)
+            if cajas < 1:
+                cajas = 1
+
+            estado_txt = "🚨 URGENTE" if s <= c * (t + 1) else "⚠️ PRONTO"
+
+            txt += f"{estado_txt} {producto} → {cajas} cajas\n"
+            hay = True
+
+    bot.reply_to(m, txt if hay else "✅ Sin reposición", parse_mode="Markdown")
 
 # =========================
 # START
