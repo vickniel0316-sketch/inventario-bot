@@ -452,33 +452,45 @@ def flujo_nuevo(m):
 
 @bot.message_handler(func=lambda m: ok(m) and m.chat.id in estado and estado[m.chat.id].get("modo") == "editar")
 def flujo_editar(m):
-    d = estado[m.chat.id]
-    fila = d["fila"]
-    paso = d["paso"]
+    d = estado.get(m.chat.id)
 
-    if paso == "nivel":
-        stock.update_acell(f"C{fila}", m.text)
-        d["paso"] = "pasillo"
-        bot.reply_to(m, "➡️ Pasillo:")
+    if not d:
         return
 
-    if paso == "pasillo":
-        stock.update_acell(f"D{fila}", m.text)
-        d["paso"] = "lado"
-        bot.reply_to(m, "↔️ Lado:")
+    fila = d.get("fila")
+    paso = d.get("paso")
+
+    if not fila or not paso:
+        bot.reply_to(m, "⚠️ Estado inválido. Reinicia edición.")
+        estado.pop(m.chat.id, None)
         return
 
-    if paso == "lado":
-        stock.update_acell(f"E{fila}", m.text)
-        d["paso"] = "seccion"
-        bot.reply_to(m, "🔢 Sección:")
+    pasos = {
+        "nivel": ("C", "pasillo", "➡️ Pasillo:"),
+        "pasillo": ("D", "lado", "↔️ Lado:"),
+        "lado": ("E", "seccion", "🔢 Sección:"),
+    }
+
+    if paso not in pasos:
+        bot.reply_to(m, f"⚠️ Paso desconocido: {paso}")
+        estado.pop(m.chat.id, None)
         return
 
-    if paso == "seccion":
-        stock.update_acell(f"F{fila}", m.text)
+    col, next_step, msg = pasos[paso]
+
+    try:
+        stock.update_acell(f"{col}{fila}", m.text)
+    except Exception as e:
+        bot.reply_to(m, f"❌ Error Sheets: {e}")
+        return
+
+    d["paso"] = next_step
+    bot.reply_to(m, msg)
+
+    if next_step == "seccion":
         invalidar_indice()
-        del estado[m.chat.id]
-        bot.reply_to(m, "✅ Editado")
+        estado.pop(m.chat.id, None)
+        bot.reply_to(m, "✅ Editado correctamente")
 
 # =========================
 # ELIMINAR
