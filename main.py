@@ -420,8 +420,8 @@ def flujo_nuevo(m):
 # =========================
 # EDITAR
 # =========================
-@bot.message_handler(func=lambda m: ok(m) and m.text.lower().startswith("editar "))
-def editar(m):
+@bot.message_handler(func=lambda m: ok(m) and m.chat.id in estado and estado[m.chat.id].get("modo") != "editar")
+def flujo_nuevo(m):
     nombre = m.text.replace("editar", "").strip()
 
     resultado = buscar_producto_inteligente(nombre)
