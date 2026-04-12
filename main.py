@@ -422,33 +422,6 @@ def flujo_nuevo(m):
 # =========================
 @bot.message_handler(func=lambda m: ok(m) and m.chat.id in estado and estado[m.chat.id].get("modo") == "editar")
 def flujo_editar(m):
-    nombre = m.text.replace("editar", "").strip()
-
-    resultado = buscar_producto_inteligente(nombre)
-
-    if resultado is None:
-        bot.reply_to(m, "❌ No encontrado")
-        return
-
-    if isinstance(resultado, list):
-        with lock:
-            opciones_temp[m.chat.id] = {"opciones": resultado[:5], "modo": "editar"}
-
-        texto = "⚠️ Varias coincidencias:\n\n"
-        for i, f in enumerate(resultado[:5], 1):
-            nombre = stock.cell(f, 1).value
-            texto += f"{i}. {nombre}\n"
-        texto += "\nResponde con el número."
-        bot.reply_to(m, texto)
-        return
-
-    with lock:
-        estado[m.chat.id] = {"modo": "editar", "fila": resultado, "paso": "nivel"}
-
-    bot.reply_to(m, "📌 Nivel:")
-
-@bot.message_handler(func=lambda m: ok(m) and m.chat.id in estado and estado[m.chat.id].get("modo") == "editar")
-def flujo_editar(m):
     d = estado[m.chat.id]
     fila = d["fila"]
     paso = d["paso"]
