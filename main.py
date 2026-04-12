@@ -396,19 +396,27 @@ def flujo_nuevo(m):
         data["email"] = m.text
         fila = len(stock.get_all_values()) + 1
 
-        stock.update(f"A{fila}:K{fila}", [[
-            data["nombre"],
-            float(data["stock"]),
-            data["nivel"],
-            data["pasillo"],
-            data["lado"],
-            data["seccion"],
-            data["email"],
-            0.0,
-            f'=SI.ERROR(ABS(SUMAR.SI.CONJUNTO(Movimientos!D:D,Movimientos!B:B,MINUSC(A{fila}),Movimientos!C:C,"Salida"))/H{fila},0)',
-            float(num(data["tiempo_entrega"])),
-            float(num(data["unidades_caja"]))
-        ]], value_input_option="USER_ENTERED")
+stock.update(f"A{fila}:K{fila}", [[
+    data["nombre"],
+
+    # 🧠 STOCK_ACTUAL (columna B)
+    f'=SI.ERROR(SUMAR.SI(Movimientos!B:B, A{fila}, Movimientos!D:D), 0)',
+
+    data["nivel"],
+    data["pasillo"],
+    data["lado"],
+    data["seccion"],
+    data["email"],
+
+    # 📅 DIAS (columna H)
+    f'=SI.ERROR(MIN(6, HOY() - QUERY(Movimientos!A:D, "select A where B = \'" & A{fila} & "\' order by A asc limit 1", 0)), 0)',
+
+    # 📉 CONSUMO_DIA (columna I)
+    f'=SI.ERROR(ABS(SUMAR.SI.CONJUNTO(Movimientos!D:D,Movimientos!B:B,MINUSC(A{fila}),Movimientos!C:C,"Salida"))/H{fila},0)',
+
+    float(num(data["tiempo_entrega"])),
+    float(num(data["unidades_caja"]))
+]], value_input_option="USER_ENTERED")
 
         invalidar_indice()
 
