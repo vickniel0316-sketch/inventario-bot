@@ -2,107 +2,73 @@ import telebot
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
+import time
+import math
 from zoneinfo import ZoneInfo
-import os, json, time, threading, math
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import threading
 
-# =========================
-# CONFIG
-# =========================
-TOKEN = os.getenv("TOKEN")
-GOOGLE_CREDS = os.getenv("GOOGLE_CREDS")
-CHAT_ID = 6249114480
-
-creds = ServiceAccountCredentials.from_json_keyfile_dict(
-    json.loads(GOOGLE_CREDS),
-    ["https://spreadsheets.google.com/feeds","https://www.googleapis.com/auth/drive"]
-)
-
-client = gspread.authorize(creds)
-ss = client.open("inventario_vickniel01")
-stock = ss.worksheet("Stock")
-mov = ss.worksheet("Movimientos")
-
-# =========================
-# KEEP ALIVE
-# =========================
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
-
-def web():
-    port = int(os.environ.get("PORT", 8080))
-    HTTPServer(("0.0.0.0", port), Handler).serve_forever()
-
-threading.Thread(target=web, daemon=True).start()
-
-# =========================
-# BOT
-# =========================
+# Configuración inicial
+TOKEN = "TU_TELEGRAM_BOT_TOKEN"
 bot = telebot.TeleBot(TOKEN)
-estado = {}
-opciones_temp = {}
 lock = threading.Lock()
 
-def ok(m): return m.from_user.id == CHAT_ID
+# Google Sheets
+scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+creds = ServiceAccountCredentials.from_json_keyfile_name("tu_archivo_credenciales.json", scope)
+client = gspread.authorize(creds)
+sheet = client.open("Nombre de tu Hoja")
+stock = sheet.worksheet("Stock")
+mov = sheet.worksheet("Movimientos")
+
+# Variables de control
+CACHE_TTL = 300
+indice = {}
+last_update = 0
+opciones_temp = {}
+estado = {}
+
+# =========================
+# FUNCIONES DE APOYO
+# =========================
+def ok(m):
+    # Aquí puedes agregar validación de usuarios permitidos
+    return True
 
 def num(x):
     try:
-        return float(str(x).replace(',', '.').strip())
+        return float(str(x).replace(",", "."))
     except:
         return 0
-
-# =========================
-# BUSQUEDA INTELIGENTE
-# =========================
-indice = {}
-last_update = 0
-CACHE_TTL = 60
 
 def invalidar_indice():
     global last_update
     last_update = 0
 
-def normalizar(texto):
-    texto = str(texto).lower().strip()
-    reemplazos = {
-        "acción": "accion",
-        "á": "a", "é": "e", "í": "i", "ó": "o", "ú": "u"
-    }
-    for k, v in reemplazos.items():
-        texto = texto.replace(k, v)
-    return texto
-
 def tokenizar(texto):
-    texto = normalizar(texto)
-    palabras = texto.split()
     tokens = set()
-
+    palabras = texto.lower().split()
     for p in palabras:
-        tokens.add(p)
-        tokens.add(p[:3])
-        if any(c.isdigit() for c in p):
+        if len(p) > 2:
+            tokens.add(p)
+        if any(char.isdigit() for char in p):
             tokens.add(''.join(filter(str.isdigit, p)))
-
     return tokens
 
 def construir_indice():
     global indice, last_update
-    data = stock.get_all_values()
-    indice = {}
-
-    for i in range(1, len(data)):
-        nombre = data[i][0]
-        tokens = tokenizar(nombre)
-
-        for t in tokens:
-            if t not in indice:
-                indice[t] = set()
-            indice[t].add(i + 1)
-
-    last_update = time.time()
+    try:
+        data = stock.get_all_values()
+        indice = {}
+        for i in range(1, len(data)):
+            nombre = data[i][0]
+            tokens = tokenizar(nombre)
+            for t in tokens:
+                if t not in indice:
+                    indice[t] = set()
+                indice[t].add(i + 1)
+        last_update = time.time()
+    except Exception as e:
+        print(f"Error construyendo índice: {e}")
 
 def obtener_indice():
     global last_update
@@ -113,7 +79,6 @@ def obtener_indice():
 def buscar_producto_inteligente(query):
     idx = obtener_indice()
     palabras = tokenizar(query)
-
     resultados = None
 
     for p in palabras:
@@ -125,16 +90,14 @@ def buscar_producto_inteligente(query):
 
     if not resultados:
         return None
-
+    
     resultados = list(resultados)
-
     if len(resultados) == 1:
         return resultados[0]
-
     return resultados[:5]
 
 # =========================
-# MOVIMIENTOS
+# MOVIMIENTOS (Entrada, Salida, Ajuste)
 # =========================
 @bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower().startswith(("entrada","salida","ajuste")))
 def movimientos(m):
@@ -188,7 +151,7 @@ def movimientos(m):
 
     except Exception as e:
         print(e)
-        bot.reply_to(m, "❌ Error")
+        bot.reply_to(m, "❌ Error procesando movimiento")
 
 # =========================
 # 📦 PEDIDOS
@@ -196,19 +159,15 @@ def movimientos(m):
 @bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower() == "pedidos")
 def pedidos(m):
     data = stock.get_all_values()
-
     if not data or len(data) < 2:
         bot.reply_to(m, "❌ No hay datos en Stock")
         return
 
     headers = data[0]
-
-    # 🔎 búsqueda flexible de columnas
     def col(name):
         name = name.strip().lower()
         for i, h in enumerate(headers):
-            if h.strip().lower() == name:
-                return i
+            if h.strip().lower() == name: return i
         return -1
 
     i_stock = col("Stock_Actual")
@@ -222,28 +181,16 @@ def pedidos(m):
 
     for i in range(1, len(data)):
         row = data[i]
-
         def get(idx):
-            if idx == -1 or idx >= len(row):
-                return 0
+            if idx == -1 or idx >= len(row): return 0
             return num(row[idx])
 
-        s = get(i_stock)
-        c = get(i_cons)
-        t = get(i_tiempo)
-        u = get(i_caja)
-        d = get(i_dias)
-
+        s, c, t, u, d = get(i_stock), get(i_cons), get(i_tiempo), get(i_caja), get(i_dias)
         producto = row[0]
 
-        # 🔧 NORMALIZACIÓN
-        if u <= 0:
-            u = 1
+        if u <= 0: u = 1
+        if d <= 0: d = 999
 
-        if d <= 0:
-            d = 999
-
-        # 🆕 PRODUCTOS NUEVOS
         if d <= 3:
             if s < 5:
                 cajas = math.ceil((5 - s) / u)
@@ -251,36 +198,52 @@ def pedidos(m):
                 hay = True
             continue
 
-        # ⚠️ sin consumo no se evalúa
-        if c <= 0:
-            continue
+        if c <= 0: continue
 
-        # 📦 LÓGICA DE REPOSICIÓN
         punto = (c * t) + (c * 2)
-
         if s <= punto:
             objetivo = (c * t) + (c * 2) + (c * 5)
             cajas = math.ceil((objetivo - s) / u)
-
-            if cajas < 1:
-                cajas = 1
-
+            if cajas < 1: cajas = 1
             estado_txt = "🚨 URGENTE" if s <= c * (t + 1) else "⚠️ PRONTO"
-
             txt += f"{estado_txt} {producto} → {cajas} cajas\n"
             hay = True
 
     bot.reply_to(m, txt if hay else "✅ Sin reposición", parse_mode="Markdown")
 
 # =========================
-# SELECCION MULTIUSO
+# EDITAR (INICIO)
 # =========================
-@bot.message_handler(func=lambda m: m.chat.id in opciones_temp and ok(m))
+@bot.message_handler(func=lambda m: ok(m) and m.text.lower().startswith("editar "))
+def comando_editar(m):
+    nombre = m.text.replace("editar", "").strip()
+    resultado = buscar_producto_inteligente(nombre)
+
+    if resultado is None:
+        bot.reply_to(m, "❌ No encontrado")
+        return
+
+    if isinstance(resultado, list):
+        with lock:
+            opciones_temp[m.chat.id] = {"opciones": resultado[:5], "modo": "editar"}
+        texto = "🔍 Selecciona para EDITAR:\n\n"
+        for i, f in enumerate(resultado[:5], 1):
+            texto += f"{i}. {stock.cell(f, 1).value}\n"
+        bot.reply_to(m, texto)
+        return
+
+    with lock:
+        estado[m.chat.id] = {"modo": "editar", "fila": resultado, "paso": "nivel"}
+    bot.reply_to(m, f"📝 Editando: *{stock.cell(resultado, 1).value}*\n📌 Nuevo Nivel:", parse_mode="Markdown")
+
+# =========================
+# SELECCION MULTIUSO (Entrada, Salida, Ajuste, Editar, Eliminar)
+# =========================
+@bot.message_handler(func=lambda m: m.chat.id in opciones_temp and ok(m) and m.text.isdigit())
 def seleccionar(m):
     try:
         data = opciones_temp[m.chat.id]
         idx = int(m.text.strip()) - 1
-
         if idx < 0 or idx >= len(data["opciones"]):
             bot.reply_to(m, "❌ Opción inválida")
             return
@@ -291,7 +254,7 @@ def seleccionar(m):
             with lock:
                 estado[m.chat.id] = {"modo": "editar", "fila": fila, "paso": "nivel"}
             del opciones_temp[m.chat.id]
-            bot.reply_to(m, "📌 Nivel:")
+            bot.reply_to(m, "📌 Nuevo Nivel:")
             return
 
         if data.get("modo") == "eliminar":
@@ -301,42 +264,61 @@ def seleccionar(m):
             bot.reply_to(m, "🗑️ Eliminado")
             return
 
-        tipo = data["tipo"]
-        cant = data["cantidad"]
-
+        tipo, cant = data["tipo"], data["cantidad"]
         prod_real = stock.cell(fila, 1).value
-
-        if tipo == "entrada":
-            valor = cant
-        elif tipo == "salida":
-            valor = -abs(cant)
-        elif tipo == "ajuste":
-            stock_actual = num(stock.cell(fila, 2).value)
-            valor = cant - stock_actual
+        
+        if tipo == "entrada": valor = cant
+        elif tipo == "salida": valor = -abs(cant)
+        elif tipo == "ajuste": valor = cant - num(stock.cell(fila, 2).value)
 
         mov.append_row([
             datetime.now(ZoneInfo("America/Santo_Domingo")).strftime("%Y-%m-%d %H:%M:%S"),
-            prod_real.lower(),
-            tipo,
-            float(valor),
-            m.from_user.first_name
+            prod_real.lower(), tipo.capitalize(), float(valor), m.from_user.first_name
         ], value_input_option="RAW")
 
         del opciones_temp[m.chat.id]
         bot.reply_to(m, "✅ Movimiento aplicado")
-
     except Exception as e:
         print(e)
-        bot.reply_to(m, "❌ Error selección")
+        bot.reply_to(m, "❌ Error en selección")
+
+# =========================
+# FLUJO DE EDICION (PASO A PASO)
+# =========================
+@bot.message_handler(func=lambda m: ok(m) and m.chat.id in estado and estado[m.chat.id].get("modo") == "editar")
+def flujo_editar(m):
+    d = estado.get(m.chat.id)
+    fila = d.get("fila")
+    paso = d.get("paso")
+
+    pasos = {
+        "nivel": ("C", "pasillo", "➡️ Pasillo:"),
+        "pasillo": ("D", "lado", "↔️ Lado:"),
+        "lado": ("E", "seccion", "🔢 Sección:"),
+        "seccion": ("F", "final", "✅ Editado correctamente")
+    }
+
+    if paso not in pasos: return
+    col, next_step, msg = pasos[paso]
+
+    try:
+        stock.update_acell(f"{col}{fila}", m.text.strip())
+        if next_step == "final":
+            invalidar_indice()
+            estado.pop(m.chat.id, None)
+            bot.reply_to(m, msg)
+        else:
+            d["paso"] = next_step
+            bot.reply_to(m, msg)
+    except Exception as e:
+        bot.reply_to(m, f"❌ Error: {e}")
 
 # =========================
 # NUEVO PRODUCTO
 # =========================
 def safe_num(text):
-    try:
-        return float(text)
-    except:
-        return 0
+    try: return float(text)
+    except: return 0
         
 @bot.message_handler(func=lambda m: ok(m) and m.text.lower() == "nuevo")
 def nuevo(m):
@@ -344,187 +326,90 @@ def nuevo(m):
         estado[m.chat.id] = {"paso": "nombre"}
     bot.reply_to(m, "📝 Nombre del producto:")
 
-
 @bot.message_handler(func=lambda m: ok(m) and m.chat.id in estado and estado[m.chat.id].get("modo") != "editar")
 def flujo_nuevo(m):
     chat_id = m.chat.id
     data = estado.get(chat_id)
-
-    if not data:
-        return
-
+    if not data: return
     paso = data.get("paso")
    
     if paso == "nombre":
-        data["nombre"] = m.text.strip()
-        data["paso"] = "stock"
+        data["nombre"], data["paso"] = m.text.strip(), "stock"
         bot.reply_to(m, "📦 Stock inicial:")
-        return
-
-    if paso == "stock":
-        data["stock"] = safe_num(m.text)
-        data["paso"] = "nivel"
+    elif paso == "stock":
+        data["stock"], data["paso"] = safe_num(m.text), "nivel"
         bot.reply_to(m, "📌 Nivel:")
-        return
-
-    if paso == "nivel":
-        data["nivel"] = m.text.strip()
-        data["paso"] = "pasillo"
+    elif paso == "nivel":
+        data["nivel"], data["paso"] = m.text.strip(), "pasillo"
         bot.reply_to(m, "➡️ Pasillo:")
-        return
-
-    if paso == "pasillo":
-        data["pasillo"] = m.text.strip()
-        data["paso"] = "lado"
+    elif paso == "pasillo":
+        data["pasillo"], data["paso"] = m.text.strip(), "lado"
         bot.reply_to(m, "↔️ Lado:")
-        return
-
-    if paso == "lado":
-        data["lado"] = m.text.strip()
-        data["paso"] = "seccion"
+    elif paso == "lado":
+        data["lado"], data["paso"] = m.text.strip(), "seccion"
         bot.reply_to(m, "🔢 Sección:")
-        return
-
-    if paso == "seccion":
-        data["seccion"] = m.text.strip()
-        data["paso"] = "tiempo_entrega"
+    elif paso == "seccion":
+        data["seccion"], data["paso"] = m.text.strip(), "tiempo_entrega"
         bot.reply_to(m, "🚚 Tiempo entrega:")
-        return
-
-    if paso == "tiempo_entrega":
-        data["tiempo_entrega"] = safe_num(m.text)
-        data["paso"] = "unidades_caja"
+    elif paso == "tiempo_entrega":
+        data["tiempo_entrega"], data["paso"] = safe_num(m.text), "unidades_caja"
         bot.reply_to(m, "📦 Unidades por caja:")
-        return
-
-    if paso == "unidades_caja":
-        data["unidades_caja"] = safe_num(m.text)
-        data["paso"] = "email"
+    elif paso == "unidades_caja":
+        data["unidades_caja"], data["paso"] = safe_num(m.text), "email"
         bot.reply_to(m, "📧 Email:")
-        return
-
-    if paso == "email":
+    elif paso == "email":
         data["email"] = m.text.strip()
-
         fila = len(stock.get_all_values()) + 1
-
         try:
             stock.update(f"A{fila}:K{fila}", [[
                 data.get("nombre", ""),
                 f'=SI.ERROR(SUMAR.SI(Movimientos!B:B, A{fila}, Movimientos!D:D), 0)',
-                data.get("nivel", ""),
-                data.get("pasillo", ""),
-                data.get("lado", ""),
-                data.get("seccion", ""),
-                data.get("email", ""),
+                data.get("nivel", ""), data.get("pasillo", ""), data.get("lado", ""),
+                data.get("seccion", ""), data.get("email", ""),
                 f'=SI.ERROR(MIN(6, HOY() - MIN(FILTRAR(Movimientos!A:A, Movimientos!B:B = A{fila}))), 0)',
                 f'=SI.ERROR(ABS(SUMAR.SI.CONJUNTO(Movimientos!D:D,Movimientos!B:B,A{fila},Movimientos!C:C,"Salida"))/H{fila},0)',
-                data.get("tiempo_entrega", 0),
-                data.get("unidades_caja", 0)
+                data.get("tiempo_entrega", 0), data.get("unidades_caja", 0)
             ]], value_input_option="USER_ENTERED")
+            
+            # Registrar stock inicial como una entrada si es > 0
+            if data["stock"] > 0:
+                mov.append_row([
+                    datetime.now(ZoneInfo("America/Santo_Domingo")).strftime("%Y-%m-%d %H:%M:%S"),
+                    data["nombre"].lower(), "Entrada", data["stock"], m.from_user.first_name
+                ], value_input_option="RAW")
 
         except Exception as e:
             bot.reply_to(m, f"❌ Error al guardar: {e}")
             return
 
         with lock:
-            if chat_id in estado:
-                del estado[chat_id]
-
+            if chat_id in estado: del estado[chat_id]
         invalidar_indice()
-
         bot.reply_to(m, "✅ Producto creado correctamente")
-        return
-# =========================
-# EDITAR
-# =========================
-@bot.message_handler(func=lambda m: ok(m) and m.chat.id in estado and estado[m.chat.id].get("modo") == "editar")
-def flujo_editar(m):
 
-    d = estado.get(m.chat.id)
-
-    if not d:
-        return
-
-    if d.get("modo") != "editar":
-        return
-
-    fila = d.get("fila")
-    paso = d.get("paso")
-
-    if not fila or not paso:
-        bot.reply_to(m, "⚠️ Estado inválido. Reinicia edición.")
-        estado.pop(m.chat.id, None)
-        return
-
-    pasos = {
-        "nivel": ("C", "pasillo", "➡️ Pasillo:"),
-        "pasillo": ("D", "lado", "↔️ Lado:"),
-        "lado": ("E", "seccion", "🔢 Sección:")
-    }
-
-    if paso not in pasos:
-        bot.reply_to(m, f"⚠️ Paso desconocido: {paso}")
-        estado.pop(m.chat.id, None)
-        return
-
-    col, next_step, msg = pasos[paso]
-
-    try:
-        stock.update_acell(f"{col}{fila}", m.text)
-    except Exception as e:
-        bot.reply_to(m, f"❌ Error Sheets: {e}")
-        return
-
-    # avanzar paso
-    d["paso"] = next_step
-
-    # responder siguiente campo
-    bot.reply_to(m, msg)
-
-    # cerrar flujo cuando ya no hay más pasos
-    if next_step not in pasos:
-        invalidar_indice()
-        estado.pop(m.chat.id, None)
-        bot.reply_to(m, "✅ Editado correctamente")
-        return
 # =========================
 # ELIMINAR
 # =========================
 @bot.message_handler(func=lambda m: ok(m) and m.text.lower().startswith("eliminar "))
 def eliminar(m):
     nombre = m.text.replace("eliminar", "").strip()
-
     resultado = buscar_producto_inteligente(nombre)
-
     if resultado is None:
         bot.reply_to(m, "❌ No encontrado")
         return
-
     if isinstance(resultado, list):
         with lock:
             opciones_temp[m.chat.id] = {"opciones": resultado[:5], "modo": "eliminar"}
-
-        texto = "⚠️ Varias coincidencias:\n\n"
+        texto = "🗑️ Selecciona para ELIMINAR:\n\n"
         for i, f in enumerate(resultado[:5], 1):
-            nombre = stock.cell(f, 1).value
-            texto += f"{i}. {nombre}\n"
-        texto += "\nResponde con el número."
+            texto += f"{i}. {stock.cell(f, 1).value}\n"
         bot.reply_to(m, texto)
         return
-
+    
     stock.delete_rows(resultado)
     invalidar_indice()
-
     bot.reply_to(m, "🗑️ Eliminado")
 
-# =========================
-# START
-# =========================
-bot.remove_webhook()
-
-while True:
-    try:
-        bot.polling(none_stop=True)
-    except:
-        time.sleep(5)
+if __name__ == "__main__":
+    print("Bot en marcha...")
+    bot.infinity_polling()
