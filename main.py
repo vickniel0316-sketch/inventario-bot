@@ -345,7 +345,7 @@ def nuevo(m):
     bot.reply_to(m, "📝 Nombre del producto:")
 
 
-@bot.message_handler(func=lambda m: ok(m) and m.chat.id in estado)
+@bot.message_handler(func=lambda m: ok(m) and m.chat.id in estado and estado[m.chat.id].get("modo") != "editar")
 def flujo_nuevo(m):
     chat_id = m.chat.id
     data = estado.get(chat_id)
@@ -411,22 +411,14 @@ def flujo_nuevo(m):
         try:
             stock.update(f"A{fila}:K{fila}", [[
                 data.get("nombre", ""),
-
-                # 🧠 STOCK_ACTUAL
                 f'=SI.ERROR(SUMAR.SI(Movimientos!B:B, A{fila}, Movimientos!D:D), 0)',
-
                 data.get("nivel", ""),
                 data.get("pasillo", ""),
                 data.get("lado", ""),
                 data.get("seccion", ""),
                 data.get("email", ""),
-
-                # 📅 DIAS
                 f'=SI.ERROR(MIN(6, HOY() - MIN(FILTRAR(Movimientos!A:A, Movimientos!B:B = A{fila}))), 0)',
-
-                # 📉 CONSUMO_DIA
                 f'=SI.ERROR(ABS(SUMAR.SI.CONJUNTO(Movimientos!D:D,Movimientos!B:B,A{fila},Movimientos!C:C,"Salida"))/H{fila},0)',
-
                 data.get("tiempo_entrega", 0),
                 data.get("unidades_caja", 0)
             ]], value_input_option="USER_ENTERED")
@@ -435,17 +427,14 @@ def flujo_nuevo(m):
             bot.reply_to(m, f"❌ Error al guardar: {e}")
             return
 
-        # Limpiar estado
         with lock:
             if chat_id in estado:
                 del estado[chat_id]
 
-        # Refrescar índices si usas cache
         invalidar_indice()
 
         bot.reply_to(m, "✅ Producto creado correctamente")
         return
-
 # =========================
 # EDITAR
 # =========================
