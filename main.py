@@ -180,9 +180,9 @@ def movimientos(m):
             datetime.now(ZoneInfo("America/Santo_Domingo")).strftime("%Y-%m-%d %H:%M:%S"),
             prod_real.lower(),
             tipo_txt,
-            valor,
+            float(valor),
             m.from_user.first_name
-        ], value_input_option="USER_ENTERED")
+        ], value_input_option="RAW")
 
         bot.reply_to(m, f"✅ {tipo_txt} aplicado a *{prod_real}*.", parse_mode="Markdown")
 
@@ -205,7 +205,6 @@ def seleccionar(m):
 
         fila = data["opciones"][idx]
 
-        # EDITAR
         if data.get("modo") == "editar":
             with lock:
                 estado[m.chat.id] = {"modo": "editar", "fila": fila, "paso": "nivel"}
@@ -213,7 +212,6 @@ def seleccionar(m):
             bot.reply_to(m, "📌 Nivel:")
             return
 
-        # ELIMINAR
         if data.get("modo") == "eliminar":
             stock.delete_rows(fila)
             invalidar_indice()
@@ -221,7 +219,6 @@ def seleccionar(m):
             bot.reply_to(m, "🗑️ Eliminado")
             return
 
-        # MOVIMIENTOS
         tipo = data["tipo"]
         cant = data["cantidad"]
 
@@ -239,9 +236,9 @@ def seleccionar(m):
             datetime.now(ZoneInfo("America/Santo_Domingo")).strftime("%Y-%m-%d %H:%M:%S"),
             prod_real.lower(),
             tipo,
-            valor,
+            float(valor),
             m.from_user.first_name
-        ], value_input_option="USER_ENTERED")
+        ], value_input_option="RAW")
 
         del opciones_temp[m.chat.id]
         bot.reply_to(m, "✅ Movimiento aplicado")
@@ -319,17 +316,17 @@ def flujo_nuevo(m):
 
         stock.update(f"A{fila}:K{fila}", [[
             data["nombre"],
-            data["stock"],
+            float(data["stock"]),
             data["nivel"],
             data["pasillo"],
             data["lado"],
             data["seccion"],
             data["email"],
-            0,
-            0,
-            data["tiempo_entrega"],
-            data["unidades_caja"]
-        ]])
+            0.0,
+            0.0,
+            float(num(data["tiempo_entrega"])),
+            float(num(data["unidades_caja"]))
+        ]], value_input_option="RAW")
 
         invalidar_indice()
 
