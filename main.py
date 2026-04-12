@@ -191,6 +191,88 @@ def movimientos(m):
         bot.reply_to(m, "❌ Error")
 
 # =========================
+# 📦 PEDIDOS
+# =========================
+@bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower() == "pedidos")
+def pedidos(m):
+    data = stock.get_all_values()
+
+    if not data or len(data) < 2:
+        bot.reply_to(m, "❌ No hay datos en Stock")
+        return
+
+    headers = data[0]
+
+    # 🔎 búsqueda flexible de columnas
+    def col(name):
+        name = name.strip().lower()
+        for i, h in enumerate(headers):
+            if h.strip().lower() == name:
+                return i
+        return -1
+
+    i_stock = col("Stock_Actual")
+    i_cons = col("Consumo_dia")
+    i_tiempo = col("Tiempo_entrega")
+    i_caja = col("Unidades_Caja")
+    i_dias = col("Dias")
+
+    txt = "📦 *PEDIDOS*\n\n"
+    hay = False
+
+    for i in range(1, len(data)):
+        row = data[i]
+
+        def get(idx):
+            if idx == -1 or idx >= len(row):
+                return 0
+            return num(row[idx])
+
+        s = get(i_stock)
+        c = get(i_cons)
+        t = get(i_tiempo)
+        u = get(i_caja)
+        d = get(i_dias)
+
+        producto = row[0]
+
+        # 🔧 NORMALIZACIÓN
+        if u <= 0:
+            u = 1
+
+        if d <= 0:
+            d = 999
+
+        # 🆕 PRODUCTOS NUEVOS
+        if d <= 3:
+            if s < 5:
+                cajas = math.ceil((5 - s) / u)
+                txt += f"🆕 {producto} → {cajas} cajas\n"
+                hay = True
+            continue
+
+        # ⚠️ sin consumo no se evalúa
+        if c <= 0:
+            continue
+
+        # 📦 LÓGICA DE REPOSICIÓN
+        punto = (c * t) + (c * 2)
+
+        if s <= punto:
+            objetivo = (c * t) + (c * 2) + (c * 5)
+            cajas = math.ceil((objetivo - s) / u)
+
+            if cajas < 1:
+                cajas = 1
+
+            estado_txt = "🚨 URGENTE" if s <= c * (t + 1) else "⚠️ PRONTO"
+
+            txt += f"{estado_txt} {producto} → {cajas} cajas\n"
+            hay = True
+
+    bot.reply_to(m, txt if hay else "✅ Sin reposición", parse_mode="Markdown")
+
+# =========================
 # SELECCION MULTIUSO
 # =========================
 @bot.message_handler(func=lambda m: m.chat.id in opciones_temp and ok(m))
