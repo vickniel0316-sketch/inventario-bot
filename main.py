@@ -438,12 +438,15 @@ def flujo_nuevo(m):
 # =========================
 # EDITAR
 # =========================
-@bot.message_handler(func=lambda m: ok(m) and m.chat.id in estado and estado[m.chat.id].get("modo") == "editar")
+@bot.message_handler(func=lambda m: ok(m) and m.chat.id in estado)
 def flujo_editar(m):
 
     d = estado.get(m.chat.id)
 
     if not d:
+        return
+
+    if d.get("modo") != "editar":
         return
 
     fila = d.get("fila")
