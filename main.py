@@ -44,12 +44,15 @@ threading.Thread(target=web, daemon=True).start()
 bot = telebot.TeleBot(TOKEN)
 estado = {}
 opciones_temp = {}
+lock = threading.Lock()
 
 def ok(m): return m.from_user.id == CHAT_ID
 
 def num(x):
-    try: return float(str(x).replace(',', '.'))
-    except: return 0
+    try:
+        return float(str(x).replace(',', '.').strip())
+    except:
+        return 0
 
 # =========================
 # BUSQUEDA INTELIGENTE
@@ -57,6 +60,10 @@ def num(x):
 indice = {}
 last_update = 0
 CACHE_TTL = 60
+
+def invalidar_indice():
+    global last_update
+    last_update = 0
 
 def normalizar(texto):
     texto = str(texto).lower().strip()
@@ -145,7 +152,9 @@ def movimientos(m):
             return
 
         if isinstance(resultado, list):
-            opciones_temp[m.chat.id] = {"opciones": resultado[:5], "tipo": tipo, "cantidad": cant}
+            with lock:
+                opciones_temp[m.chat.id] = {"opciones": resultado[:5], "tipo": tipo, "cantidad": cant}
+
             texto = "⚠️ Varias coincidencias:\n\n"
             for i, f in enumerate(resultado[:5], 1):
                 nombre = stock.cell(f, 1).value
@@ -179,7 +188,8 @@ def movimientos(m):
         bot.reply_to(m, f"✅ {tipo_txt} aplicado a *{prod_real}*.", parse_mode="Markdown")
 
     except Exception as e:
-        bot.reply_to(m, f"❌ Error: {e}")
+        print(e)
+        bot.reply_to(m, f"❌ Error")
 
 # =========================
 # SELECCIÓN OPCIONES
@@ -202,19 +212,16 @@ def seleccionar(m):
 
         if tipo == "entrada":
             valor = cant
-            tipo_txt = "Entrada"
         elif tipo == "salida":
             valor = -abs(cant)
-            tipo_txt = "Salida"
         elif tipo == "ajuste":
             stock_actual = num(stock.cell(fila, 2).value)
             valor = cant - stock_actual
-            tipo_txt = "Ajuste"
 
         mov.append_row([
             datetime.now(ZoneInfo("America/Santo_Domingo")).strftime("%Y-%m-%d %H:%M:%S"),
             prod_real.lower(),
-            tipo_txt,
+            tipo,
             valor,
             m.from_user.first_name
         ], value_input_option="USER_ENTERED")
@@ -222,7 +229,8 @@ def seleccionar(m):
         del opciones_temp[m.chat.id]
         bot.reply_to(m, "✅ Movimiento aplicado")
 
-    except:
+    except Exception as e:
+        print(e)
         bot.reply_to(m, "❌ Error selección")
 
 # =========================
@@ -230,7 +238,8 @@ def seleccionar(m):
 # =========================
 @bot.message_handler(func=lambda m: ok(m) and m.text.lower() == "nuevo")
 def nuevo(m):
-    estado[m.chat.id] = {"paso": "nombre"}
+    with lock:
+        estado[m.chat.id] = {"paso": "nombre"}
     bot.reply_to(m, "📝 Nombre del producto:")
 
 @bot.message_handler(func=lambda m: ok(m) and m.chat.id in estado)
@@ -271,6 +280,18 @@ def flujo_nuevo(m):
 
     if paso == "seccion":
         data["seccion"] = m.text
+        data["paso"] = "tiempo_entrega"
+        bot.reply_to(m, "🚚 Tiempo entrega:")
+        return
+
+    if paso == "tiempo_entrega":
+        data["tiempo_entrega"] = m.text
+        data["paso"] = "unidades_caja"
+        bot.reply_to(m, "📦 Unidades por caja:")
+        return
+
+    if paso == "unidades_caja":
+        data["unidades_caja"] = m.text
         data["paso"] = "email"
         bot.reply_to(m, "📧 Email:")
         return
@@ -279,28 +300,90 @@ def flujo_nuevo(m):
         data["email"] = m.text
         fila = len(stock.get_all_values()) + 1
 
-        stock.update(f"A{fila}:G{fila}", [[
+        stock.update(f"A{fila}:I{fila}", [[
             data["nombre"], data["stock"], data["nivel"],
-            data["pasillo"], data["lado"], data["seccion"], data["email"]
+            data["pasillo"], data["lado"], data["seccion"],
+            data["tiempo_entrega"], data["unidades_caja"],
+            data["email"]
         ]])
 
-        stock.update_acell(f"B{fila}",
-            f'=SI.ERROR(SUMAR.SI(Movimientos!B:B,A{fila},Movimientos!D:D),0)'
-        )
+        invalidar_indice()
 
-        stock.update_acell(f"H{fila}",
-            f'=SI.ERROR(ABS(SUMAR.SI.CONJUNTO(Movimientos!D:D,Movimientos!B:B,A{fila},Movimientos!C:C,"Salida",Movimientos!A:A,">="&HOY()-7))/7,0)'
-        )
+        with lock:
+            del estado[chat_id]
 
-        stock.update_acell(f"I{fila}",
-            f'=SI.ERROR(MIN(6,HOY()-QUERY(Movimientos!A:D,"select A where B = \'"&A{fila}&"\' order by A asc limit 1",0)),0)'
-        )
-
-        del estado[chat_id]
         bot.reply_to(m, "✅ Producto creado")
 
 # =========================
-# 🔥 PEDIDOS (INSERTADO SIN CAMBIAR NADA MÁS)
+# EDITAR
+# =========================
+@bot.message_handler(func=lambda m: ok(m) and m.text.lower().startswith("editar "))
+def editar(m):
+    nombre = m.text.replace("editar", "").strip()
+    data = stock.get_all_values()
+
+    fila = None
+    for i in range(1, len(data)):
+        if data[i][0].lower() == nombre.lower():
+            fila = i + 1
+            break
+
+    if not fila:
+        bot.reply_to(m, "❌ No encontrado")
+        return
+
+    estado[m.chat.id] = {"modo": "editar", "fila": fila, "paso": "nivel"}
+    bot.reply_to(m, "📌 Nivel:")
+
+@bot.message_handler(func=lambda m: ok(m) and m.chat.id in estado and estado[m.chat.id].get("modo") == "editar")
+def flujo_editar(m):
+    d = estado[m.chat.id]
+    fila = d["fila"]
+    paso = d["paso"]
+
+    if paso == "nivel":
+        stock.update_acell(f"C{fila}", m.text)
+        d["paso"] = "pasillo"
+        bot.reply_to(m, "➡️ Pasillo:")
+        return
+
+    if paso == "pasillo":
+        stock.update_acell(f"D{fila}", m.text)
+        d["paso"] = "lado"
+        bot.reply_to(m, "↔️ Lado:")
+        return
+
+    if paso == "lado":
+        stock.update_acell(f"E{fila}", m.text)
+        d["paso"] = "seccion"
+        bot.reply_to(m, "🔢 Sección:")
+        return
+
+    if paso == "seccion":
+        stock.update_acell(f"F{fila}", m.text)
+        invalidar_indice()
+        del estado[m.chat.id]
+        bot.reply_to(m, "✅ Editado")
+
+# =========================
+# ELIMINAR (REAL)
+# =========================
+@bot.message_handler(func=lambda m: ok(m) and m.text.lower().startswith("eliminar "))
+def eliminar(m):
+    nombre = m.text.replace("eliminar", "").strip()
+    data = stock.get_all_values()
+
+    for i in range(1, len(data)):
+        if data[i][0].lower() == nombre.lower():
+            stock.delete_rows(i+1)
+            invalidar_indice()
+            bot.reply_to(m, "🗑️ Eliminado")
+            return
+
+    bot.reply_to(m, "❌ No encontrado")
+
+# =========================
+# PEDIDOS
 # =========================
 @bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower() == "pedidos")
 def pedidos(m):
@@ -333,13 +416,13 @@ def pedidos(m):
         s = get(i_stock)
         c = get(i_cons)
         t = get(i_tiempo)
-        u = get(i_caja) or 1
-        d = get(i_dias)
-
-        producto = row[0]
+        u = get(i_caja)
 
         if u <= 0:
             continue
+
+        d = get(i_dias)
+        producto = row[0]
 
         if d <= 3:
             if s < 5:
@@ -353,11 +436,11 @@ def pedidos(m):
         if s <= punto:
             objetivo = (c * t) + (c * 2) + (c * 5)
             cajas = math.ceil((objetivo - s) / u)
+
             if cajas < 1:
                 cajas = 1
 
             estado_txt = "🚨 URGENTE" if s <= c * (t + 1) else "⚠️ PRONTO"
-
             txt += f"{estado_txt} {producto} → {cajas} cajas\n"
             hay = True
 
