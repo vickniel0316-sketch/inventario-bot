@@ -405,10 +405,10 @@ def flujo_nuevo(m):
             data["seccion"],
             data["email"],
             0.0,
-            0.0,
+            f'=SI.ERROR(ABS(SUMAR.SI.CONJUNTO(Movimientos!D:D,Movimientos!B:B,MINUSC(A{fila}),Movimientos!C:C,"Salida"))/H{fila},0)',
             float(num(data["tiempo_entrega"])),
             float(num(data["unidades_caja"]))
-        ]], value_input_option="RAW")
+        ]], value_input_option="USER_ENTERED")
 
         invalidar_indice()
 
