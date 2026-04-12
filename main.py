@@ -90,7 +90,6 @@ def tokenizar(texto):
 
 def construir_indice():
     global indice, last_update
-
     data = stock.get_all_values()
     indice = {}
 
@@ -189,10 +188,10 @@ def movimientos(m):
 
     except Exception as e:
         print(e)
-        bot.reply_to(m, f"❌ Error")
+        bot.reply_to(m, "❌ Error")
 
 # =========================
-# SELECCIÓN OPCIONES
+# SELECCION MULTIUSO
 # =========================
 @bot.message_handler(func=lambda m: m.chat.id in opciones_temp and ok(m))
 def seleccionar(m):
@@ -205,6 +204,24 @@ def seleccionar(m):
             return
 
         fila = data["opciones"][idx]
+
+        # EDITAR
+        if data.get("modo") == "editar":
+            with lock:
+                estado[m.chat.id] = {"modo": "editar", "fila": fila, "paso": "nivel"}
+            del opciones_temp[m.chat.id]
+            bot.reply_to(m, "📌 Nivel:")
+            return
+
+        # ELIMINAR
+        if data.get("modo") == "eliminar":
+            stock.delete_rows(fila)
+            invalidar_indice()
+            del opciones_temp[m.chat.id]
+            bot.reply_to(m, "🗑️ Eliminado")
+            return
+
+        # MOVIMIENTOS
         tipo = data["tipo"]
         cant = data["cantidad"]
 
@@ -300,11 +317,18 @@ def flujo_nuevo(m):
         data["email"] = m.text
         fila = len(stock.get_all_values()) + 1
 
-        stock.update(f"A{fila}:I{fila}", [[
-            data["nombre"], data["stock"], data["nivel"],
-            data["pasillo"], data["lado"], data["seccion"],
-            data["tiempo_entrega"], data["unidades_caja"],
-            data["email"]
+        stock.update(f"A{fila}:K{fila}", [[
+            data["nombre"],
+            data["stock"],
+            data["nivel"],
+            data["pasillo"],
+            data["lado"],
+            data["seccion"],
+            data["email"],
+            0,
+            0,
+            data["tiempo_entrega"],
+            data["unidades_caja"]
         ]])
 
         invalidar_indice()
@@ -320,19 +344,28 @@ def flujo_nuevo(m):
 @bot.message_handler(func=lambda m: ok(m) and m.text.lower().startswith("editar "))
 def editar(m):
     nombre = m.text.replace("editar", "").strip()
-    data = stock.get_all_values()
 
-    fila = None
-    for i in range(1, len(data)):
-        if data[i][0].lower() == nombre.lower():
-            fila = i + 1
-            break
+    resultado = buscar_producto_inteligente(nombre)
 
-    if not fila:
+    if resultado is None:
         bot.reply_to(m, "❌ No encontrado")
         return
 
-    estado[m.chat.id] = {"modo": "editar", "fila": fila, "paso": "nivel"}
+    if isinstance(resultado, list):
+        with lock:
+            opciones_temp[m.chat.id] = {"opciones": resultado[:5], "modo": "editar"}
+
+        texto = "⚠️ Varias coincidencias:\n\n"
+        for i, f in enumerate(resultado[:5], 1):
+            nombre = stock.cell(f, 1).value
+            texto += f"{i}. {nombre}\n"
+        texto += "\nResponde con el número."
+        bot.reply_to(m, texto)
+        return
+
+    with lock:
+        estado[m.chat.id] = {"modo": "editar", "fila": resultado, "paso": "nivel"}
+
     bot.reply_to(m, "📌 Nivel:")
 
 @bot.message_handler(func=lambda m: ok(m) and m.chat.id in estado and estado[m.chat.id].get("modo") == "editar")
@@ -366,85 +399,34 @@ def flujo_editar(m):
         bot.reply_to(m, "✅ Editado")
 
 # =========================
-# ELIMINAR (REAL)
+# ELIMINAR
 # =========================
 @bot.message_handler(func=lambda m: ok(m) and m.text.lower().startswith("eliminar "))
 def eliminar(m):
     nombre = m.text.replace("eliminar", "").strip()
-    data = stock.get_all_values()
 
-    for i in range(1, len(data)):
-        if data[i][0].lower() == nombre.lower():
-            stock.delete_rows(i+1)
-            invalidar_indice()
-            bot.reply_to(m, "🗑️ Eliminado")
-            return
+    resultado = buscar_producto_inteligente(nombre)
 
-    bot.reply_to(m, "❌ No encontrado")
+    if resultado is None:
+        bot.reply_to(m, "❌ No encontrado")
+        return
 
-# =========================
-# PEDIDOS
-# =========================
-@bot.message_handler(func=lambda m: m.text and ok(m) and m.text.lower() == "pedidos")
-def pedidos(m):
-    data = stock.get_all_values()
-    headers = data[0]
+    if isinstance(resultado, list):
+        with lock:
+            opciones_temp[m.chat.id] = {"opciones": resultado[:5], "modo": "eliminar"}
 
-    def col(name):
-        try:
-            return headers.index(name)
-        except:
-            return -1
+        texto = "⚠️ Varias coincidencias:\n\n"
+        for i, f in enumerate(resultado[:5], 1):
+            nombre = stock.cell(f, 1).value
+            texto += f"{i}. {nombre}\n"
+        texto += "\nResponde con el número."
+        bot.reply_to(m, texto)
+        return
 
-    i_stock = col("Stock_Actual")
-    i_cons = col("Consumo_dia")
-    i_tiempo = col("Tiempo_entrega")
-    i_caja = col("Unidades_Caja")
-    i_dias = col("Dias")
+    stock.delete_rows(resultado)
+    invalidar_indice()
 
-    txt = "📦 *PEDIDOS*\n\n"
-    hay = False
-
-    for i in range(1, len(data)):
-        row = data[i]
-
-        def get(idx):
-            if idx == -1 or idx >= len(row):
-                return 0
-            return num(row[idx])
-
-        s = get(i_stock)
-        c = get(i_cons)
-        t = get(i_tiempo)
-        u = get(i_caja)
-
-        if u <= 0:
-            continue
-
-        d = get(i_dias)
-        producto = row[0]
-
-        if d <= 3:
-            if s < 5:
-                cajas = math.ceil((5 - s) / u)
-                txt += f"🆕 {producto} → {cajas} cajas\n"
-                hay = True
-            continue
-
-        punto = (c * t) + (c * 2)
-
-        if s <= punto:
-            objetivo = (c * t) + (c * 2) + (c * 5)
-            cajas = math.ceil((objetivo - s) / u)
-
-            if cajas < 1:
-                cajas = 1
-
-            estado_txt = "🚨 URGENTE" if s <= c * (t + 1) else "⚠️ PRONTO"
-            txt += f"{estado_txt} {producto} → {cajas} cajas\n"
-            hay = True
-
-    bot.reply_to(m, txt if hay else "✅ Sin reposición", parse_mode="Markdown")
+    bot.reply_to(m, "🗑️ Eliminado")
 
 # =========================
 # START
