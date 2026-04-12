@@ -122,7 +122,7 @@ def cmd_cancelar(m):
     with lock:
         estado.pop(m.chat.id, None)
         opciones_temp.pop(m.chat.id, None)
-    bot.reply_to(m, "❌ Operación cancelada. Estado limpio.")
+    bot.reply_to(m, "❌ Operación cancelada.")
 
 @bot.message_handler(func=lambda m: ok(m) and m.text.lower() == "nuevo")
 def cmd_nuevo(m):
@@ -139,33 +139,12 @@ def cmd_ver(m):
         bot.reply_to(m, "🔍 Selecciona:\n" + "\n".join([f"{i+1}. {stock.cell(f,1).value}" for i,f in enumerate(res)]))
     else: mostrar_detalles(m, res)
 
-@bot.message_handler(func=lambda m: ok(m) and m.text.lower().startswith("editar "))
-def cmd_editar(m):
-    prod = m.text[7:].strip()
-    res = buscar_producto_inteligente(prod)
-    if not res: bot.reply_to(m, "❌ No encontrado.")
-    elif isinstance(res, list):
-        with lock: opciones_temp[m.chat.id] = {"opciones": res, "modo": "editar"}
-        bot.reply_to(m, "📝 Selecciona para editar:\n" + "\n".join([f"{i+1}. {stock.cell(f,1).value}" for i,f in enumerate(res)]))
-    else: iniciar_edicion(m, res)
-
-@bot.message_handler(func=lambda m: ok(m) and m.text.lower().startswith("eliminar "))
-def cmd_eliminar(m):
-    prod = m.text[9:].strip()
-    res = buscar_producto_inteligente(prod)
-    if not res: bot.reply_to(m, "❌ No encontrado.")
-    elif isinstance(res, list):
-        with lock: opciones_temp[m.chat.id] = {"opciones": res, "modo": "eliminar"}
-        bot.reply_to(m, "🗑️ Selecciona para ELIMINAR:\n" + "\n".join([f"{i+1}. {stock.cell(f,1).value}" for i,f in enumerate(res)]))
-    else: ejecutar_eliminacion(m, res)
-
 @bot.message_handler(func=lambda m: ok(m) and m.text.lower() == "pedidos")
 def cmd_pedidos(m):
     try:
         data = stock.get_all_values()
         if len(data) < 2: return
         headers = [h.lower().strip() for h in data[0]]
-        # Índices dinámicos: Stock(1), Consumo(8), Tiempo(9), Caja(10), Dias(7)
         idx = {n: headers.index(n) if n in headers else -1 for n in ["stock_actual", "consumo_dia", "tiempo_entrega", "unidades_caja", "dias"]}
         txt, hay = "📦 *PEDIDOS*\n\n", False
         for row in data[1:]:
@@ -205,10 +184,6 @@ def mostrar_detalles(m, fila):
         bot.reply_to(m, msg, parse_mode="Markdown")
     except: bot.reply_to(m, "❌ Error detalles.")
 
-def iniciar_edicion(m, fila):
-    with lock: estado[m.chat.id] = {"modo": "editar", "fila": fila, "paso": "nivel"}
-    bot.reply_to(m, f"🛠 Editando: *{stock.cell(fila, 1).value}*\n📌 Nivel:")
-
 def ejecutar_mov(m, fila, tipo, cant):
     try:
         nombre = stock.cell(fila, 1).value
@@ -218,15 +193,8 @@ def ejecutar_mov(m, fila, tipo, cant):
         bot.reply_to(m, f"✅ {tipo.capitalize()} de *{nombre}* ok.")
     except: bot.reply_to(m, "❌ Error movimiento.")
 
-def ejecutar_eliminacion(m, fila):
-    try:
-        stock.delete_rows(fila)
-        invalidar_indice()
-        bot.reply_to(m, "🗑️ Producto eliminado.")
-    except: bot.reply_to(m, "❌ Error eliminar.")
-
 # =========================
-# MANEJADOR DE PASOS Y SELECCIONES
+# MANEJADOR DE PASOS
 # =========================
 
 @bot.message_handler(func=lambda m: ok(m) and (m.chat.id in estado or m.chat.id in opciones_temp))
@@ -234,86 +202,55 @@ def manejador_pasos(m):
     cid = m.chat.id
     
     if cid in opciones_temp and m.text.isdigit():
-        data = opciones_temp[cid]
-        idx = int(m.text) - 1
+        data = opciones_temp[cid]; idx = int(m.text) - 1
         if 0 <= idx < len(data["opciones"]):
             fila = data["opciones"][idx]
-            modo = data.get("modo")
             opciones_temp.pop(cid, None)
-            if modo == "editar": iniciar_edicion(m, fila)
-            elif modo == "ver": mostrar_detalles(m, fila)
-            elif modo == "eliminar": ejecutar_eliminacion(m, fila)
+            if data.get("modo") == "ver": mostrar_detalles(m, fila)
             else: ejecutar_mov(m, fila, data["tipo"], data["cantidad"])
         return
 
     if cid in estado:
         d = estado[cid]
-        modo = d.get("modo")
+        p = d["paso"]
         
-        if modo == "editar":
-            pasos = {"nivel": ("C", "pasillo", "➡️ Pasillo:"), "pasillo": ("D", "lado", "↔️ Lado:"), "lado": ("E", "seccion", "🔢 Sección:"), "seccion": ("F", "fin", "✅ Ubicación Editada.")}
-            col, sig, msg = pasos[d["paso"]]
-            stock.update_acell(f"{col}{d['fila']}", m.text.strip())
-            if sig == "fin": estado.pop(cid, None); bot.reply_to(m, msg)
-            else: d["paso"] = sig; bot.reply_to(m, msg)
+        if p == "nombre": d["n"], d["paso"] = m.text.strip(), "stock"; bot.reply_to(m, "📦 Stock inicial:")
+        elif p == "stock": 
+            val = num(m.text)
+            if val is None: bot.reply_to(m, "❌ Ingresa un número:"); return
+            d["s"], d["paso"] = val, "nivel"; bot.reply_to(m, "📌 Nivel:")
+        elif p == "nivel": d["ni"], d["paso"] = m.text.strip(), "pasillo"; bot.reply_to(m, "➡️ Pasillo:")
+        elif p == "pasillo": d["pa"], d["paso"] = m.text.strip(), "lado"; bot.reply_to(m, "↔️ Lado:")
+        elif p == "lado": d["la"], d["paso"] = m.text.strip(), "seccion"; bot.reply_to(m, "🔢 Sección:")
+        elif p == "seccion": d["se"], d["paso"] = m.text.strip(), "t"; bot.reply_to(m, "🚚 Tiempo entrega:")
+        elif p == "t":
+            val = num(m.text)
+            if val is None: bot.reply_to(m, "❌ Ingresa un número:"); return
+            d["t"], d["paso"] = val, "u"; bot.reply_to(m, "📦 Unidades/Caja:")
+        elif p == "u":
+            val = num(m.text)
+            if val is None: bot.reply_to(m, "❌ Ingresa un número:"); return
+            d["u"], d["paso"] = val, "e"; bot.reply_to(m, "📧 Email:")
+        elif p == "e":
+            try:
+                fila = len(stock.get_all_values()) + 1
+                email_u, nom_p, st_i = m.text.strip(), d['n'], d['s']
+                
+                # Fórmulas de Sheets
+                f_stock = f'=SI.ERROR(SUMAR.SI(Movimientos!B:B, A{fila}, Movimientos!D:D), 0)'
+                f_dias = f'=SI.ERROR(MIN(6, HOY() - QUERY(Movimientos!A:D, "select A where B = \'" & A{fila} & "\' order by A asc limit 1", 0)), 0)'
+                f_consumo = f'=SI.ERROR(ABS(SUMAR.SI.CONJUNTO(Movimientos!D:D, Movimientos!B:B, MINUSC(A{fila}), Movimientos!C:C, "Salida")) / H{fila}, 0)'
 
-        elif modo == "nuevo":
-            pasos_validos = ["nombre","stock","nivel","pasillo","lado","seccion","t","u","e"]
-            if d.get("paso") not in pasos_validos:
-                estado.pop(cid, None)
-                return
-
-            p = d["paso"]
-            if p == "nombre": 
-                d["n"], d["paso"] = m.text.strip(), "stock"
-                bot.reply_to(m, "📦 Stock inicial:")
-            
-            elif p == "stock":
-                val = num(m.text)
-                if val is None:
-                    bot.reply_to(m, "❌ Valor inválido. Ingresa el stock:")
-                    return
-                d["s"], d["paso"] = val, "nivel"
-                bot.reply_to(m, "📌 Nivel:")
-                    
-            elif p == "nivel": d["ni"], d["paso"] = m.text.strip(), "pasillo"; bot.reply_to(m, "➡️ Pasillo:")
-            elif p == "pasillo": d["pa"], d["paso"] = m.text.strip(), "lado"; bot.reply_to(m, "↔️ Lado:")
-            elif p == "lado": d["la"], d["paso"] = m.text.strip(), "seccion"; bot.reply_to(m, "🔢 Sección:")
-            elif p == "seccion": d["se"], d["paso"] = m.text.strip(), "t"; bot.reply_to(m, "🚚 Tiempo entrega:")
-            
-            elif p == "t":
-                val = num(m.text)
-                if val is None:
-                    bot.reply_to(m, "❌ Valor inválido. Tiempo de entrega:")
-                    return
-                d["t"], d["paso"] = val, "u"
-                bot.reply_to(m, "📦 Unidades/Caja:")
-                    
-            elif p == "u":
-                val = num(m.text)
-                if val is None:
-                    bot.reply_to(m, "❌ Valor inválido. Unidades por caja:")
-                    return
-                d["u"], d["paso"] = val, "e"
-                bot.reply_to(m, "📧 Email:")
-                    
-            elif p == "e":
-                try:
-                    fila = len(stock.get_all_values()) + 1
-                    
-                    # FÓRMULAS EXACTAS SOLICITADAS
-                    f_stock = f'=SI.ERROR(SUMAR.SI(Movimientos!B:B, A{fila}, Movimientos!D:D), 0)'
-                    f_dias = f'=SI.ERROR(MIN(6, HOY() - QUERY(Movimientos!A:D, "select A where B = \'" & A{fila} & "\' order by A asc limit 1", 0)), 0)'
-                    f_consumo = f'=SI.ERROR(ABS(SUMAR.SI.CONJUNTO(Movimientos!D:D, Movimientos!B:B, MINUSC(A{fila}), Movimientos!C:C, "Salida")) / H{fila}, 0)'
-
-                    stock.update(f"A{fila}:K{fila}", [[
-                        d['n'], f_stock, d['ni'], d['pa'], d['la'], d['se'], m.text.strip(), 
-                        f_dias, f_consumo, d['t'], d['u']
-                    ]], value_input_option="USER_ENTERED")
-                    
-                    estado.pop(cid, None); invalidar_indice(); bot.reply_to(m, "✅ Producto creado.")
-                except:
-                    bot.reply_to(m, "❌ Error conectando a Sheets.")
+                # 1. Crear en Stock
+                stock.update(f"A{fila}:K{fila}", [[nom_p, f_stock, d['ni'], d['pa'], d['la'], d['se'], email_u, f_dias, f_consumo, d['t'], d['u']]], value_input_option="USER_ENTERED")
+                
+                # 2. ✅ REGISTRO DE MOVIMIENTO INICIAL (Entrada)
+                ahora = datetime.now(ZoneInfo("America/Santo_Domingo")).strftime("%Y-%m-%d %H:%M:%S")
+                mov.append_row([ahora, nom_p.lower(), "Entrada", float(st_i), f"Sistema ({m.from_user.first_name})"], value_input_option="RAW")
+                
+                estado.pop(cid, None); invalidar_indice()
+                bot.reply_to(m, f"✅ *{nom_p}* creado y stock inicial de *{st_i}* registrado.", parse_mode="Markdown")
+            except Exception as e: bot.reply_to(m, f"❌ Error: {e}")
 
 # =========================
 # LANZAMIENTO
