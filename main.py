@@ -438,9 +438,9 @@ def flujo_nuevo(m):
 # =========================
 # EDITAR
 # =========================
-
 @bot.message_handler(func=lambda m: ok(m) and m.chat.id in estado and estado[m.chat.id].get("modo") == "editar")
 def flujo_editar(m):
+
     d = estado.get(m.chat.id)
 
     if not d:
@@ -457,7 +457,7 @@ def flujo_editar(m):
     pasos = {
         "nivel": ("C", "pasillo", "➡️ Pasillo:"),
         "pasillo": ("D", "lado", "↔️ Lado:"),
-        "lado": ("E", "seccion", "🔢 Sección:"),
+        "lado": ("E", "seccion", "🔢 Sección:")
     }
 
     if paso not in pasos:
@@ -473,14 +473,18 @@ def flujo_editar(m):
         bot.reply_to(m, f"❌ Error Sheets: {e}")
         return
 
+    # avanzar paso
     d["paso"] = next_step
+
+    # responder siguiente campo
     bot.reply_to(m, msg)
 
-    if next_step == "seccion":
+    # cerrar flujo cuando ya no hay más pasos
+    if next_step not in pasos:
         invalidar_indice()
         estado.pop(m.chat.id, None)
         bot.reply_to(m, "✅ Editado correctamente")
-
+        return
 # =========================
 # ELIMINAR
 # =========================
