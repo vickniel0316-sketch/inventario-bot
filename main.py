@@ -48,7 +48,6 @@ lock = threading.Lock()
 
 def ok(m): return m.from_user.id == CHAT_ID
 
-# FIX 1: num() ahora detecta errores de verdad (no devuelve 0 por error)
 def num(x):
     if x is None: return None
     try:
@@ -59,9 +58,10 @@ def num(x):
         return None
 
 # =========================
-# BÚSQUEDA INTELIGENTE PRO
+# BÚSQUEDA INTELIGENTE PRO (MEJORADA)
 # =========================
 indice = {}
+data_cache = {}  # CACHÉ DE FILAS COMPLETAS
 last_update = 0
 CACHE_TTL = 60
 
@@ -85,19 +85,23 @@ def tokenizar(texto):
         if any(c.isdigit() for c in p): tokens.add(''.join(filter(str.isdigit, p)))
     return tokens
 
-# FIX 3: Construir índice sin saturar la API (una sola lectura)
 def construir_indice():
-    global indice, last_update
+    global indice, last_update, data_cache
     try:
         data = stock.get_all_values()
         nuevo_indice = {}
+        nuevo_cache = {}
         for i in range(1, len(data)):
-            nombre = data[i][0]
+            fila_num = i + 1
+            fila_contenido = data[i]
+            nuevo_cache[fila_num] = fila_contenido # Guardamos la fila entera
+            nombre = fila_contenido[0]
             tokens = tokenizar(nombre)
             for t in tokens:
                 if t not in nuevo_indice: nuevo_indice[t] = set()
-                nuevo_indice[t].add(i + 1)
+                nuevo_indice[t].add(fila_num)
         indice = nuevo_indice
+        data_cache = nuevo_cache
         last_update = time.time()
     except Exception as e:
         print(f"Error índice: {e}")
@@ -144,7 +148,8 @@ def cmd_ver(m):
         with lock: opciones_temp[m.chat.id] = {"opciones": res, "modo": "ver"}
         msg = "🔍 Selecciona:\n"
         for i, f in enumerate(res):
-            msg += f"{i+1}. {stock.cell(f,1).value}\n"
+            nombre = data_cache.get(f, ["???"])[0]
+            msg += f"{i+1}. {nombre}\n"
         bot.reply_to(m, msg)
     else: mostrar_detalles(m, res)
 
@@ -157,7 +162,8 @@ def cmd_editar(m):
         with lock: opciones_temp[m.chat.id] = {"opciones": res, "modo": "editar"}
         msg = "📝 Selecciona para editar:\n"
         for i, f in enumerate(res):
-            msg += f"{i+1}. {stock.cell(f,1).value}\n"
+            nombre = data_cache.get(f, ["???"])[0]
+            msg += f"{i+1}. {nombre}\n"
         bot.reply_to(m, msg)
     else: iniciar_edicion(m, res)
 
@@ -170,21 +176,25 @@ def cmd_eliminar(m):
         with lock: opciones_temp[m.chat.id] = {"opciones": res, "modo": "eliminar"}
         msg = "🗑️ Selecciona para ELIMINAR:\n"
         for i, f in enumerate(res):
-            msg += f"{i+1}. {stock.cell(f,1).value}\n"
+            nombre = data_cache.get(f, ["???"])[0]
+            msg += f"{i+1}. {nombre}\n"
         bot.reply_to(m, msg)
     else: ejecutar_eliminacion(m, res)
 
 @bot.message_handler(func=lambda m: ok(m) and m.text.lower() == "pedidos")
 def cmd_pedidos(m):
     try:
-        data = stock.get_all_values()
-        if len(data) < 2: return
-        headers = [h.lower().strip() for h in data[0]]
-        idx = {n: headers.index(n) if n in headers else -1 for n in ["stock_actual", "consumo_dia", "tiempo_entrega", "unidades_caja", "dias"]}
+        # Usar obtener_indice para asegurar que el caché esté fresco
+        obtener_indice()
+        if not data_cache: return
         
+        # Obtenemos los headers de la primera fila del caché real si es posible, 
+        # o asumimos el orden estándar para mayor velocidad.
         txt, hay = "📦 *PEDIDOS*\n\n", False
-        for row in data[1:]:
-            s, c, t, u, d = [num(row[idx[k]]) or 0 for k in ["stock_actual", "consumo_dia", "tiempo_entrega", "unidades_caja", "dias"]]
+        for row in data_cache.values():
+            if len(row) < 11: continue
+            # Indices: Stock(1), Consumo(8), Tiempo(9), Unidades(10), Dias(7)
+            s, c, t, u, d = [num(row[i]) or 0 for i in [1, 8, 9, 10, 7]]
             if (d <= 3 and s < 5) or (c > 0 and s <= (c*t + c*2)):
                 cajas = math.ceil(((c*t + c*2 + c*5 if c>0 else 5) - s) / (u if u>0 else 1))
                 txt += f"{'🚨' if (c>0 and s <= c*(t+1)) else '⚠️'} {row[0]} → {max(1, cajas)} cajas\n"
@@ -214,7 +224,8 @@ def cmd_movimientos(m):
             with lock: opciones_temp[m.chat.id] = {"opciones": res, "tipo": tipo, "cantidad": cant_val}
             msg = "⚠️ Selecciona:\n"
             for i, f in enumerate(res):
-                msg += f"{i+1}. {stock.cell(f,1).value}\n"
+                nombre = data_cache.get(f, ["???"])[0]
+                msg += f"{i+1}. {nombre}\n"
             bot.reply_to(m, msg)
         else: ejecutar_mov(m, res, tipo, cant_val)
     except Exception as e: 
@@ -226,30 +237,35 @@ def cmd_movimientos(m):
 
 def mostrar_detalles(m, fila):
     try:
-        f = stock.row_values(fila)
+        # MEJORA: Usar data_cache en lugar de llamar a Google Sheets
+        f = data_cache.get(fila)
+        if not f: 
+            bot.reply_to(m, "❌ Error: Datos no encontrados en caché.")
+            return
         msg = f"📦 *PRODUCTO:* {f[0].upper()}\n📊 *Stock:* {f[1]}\n📍 *Ub:* P{f[3]}|L{f[4]}|S{f[5]}|N{f[2]}\n📉 *Consumo:* {f[8] if len(f)>8 else '0'}"
         bot.reply_to(m, msg, parse_mode="Markdown")
     except: bot.reply_to(m, "❌ Error detalles.")
 
-# MEJORA: Inicio de edición con menú de opciones
 def iniciar_edicion(m, fila):
     try:
-        nombre = stock.cell(fila, 1).value
+        # MEJORA: Usar data_cache
+        nombre = data_cache.get(fila, ["???"])[0]
         with lock: 
             estado[m.chat.id] = {"modo": "editar", "fila": fila, "paso": "menu"}
         
         msg = (f"🛠 *Editando:* {nombre}\n\n"
-               "¿Qué deseas modificar?\n"
-               "1. 📍 Ubicación completa (Nivel, Pasillo, Lado, Sección)\n"
-               "2. 📧 Correo electrónico\n"
-               "3. 🚚 Tiempo de entrega")
+                "¿Qué deseas modificar?\n"
+                "1. 📍 Ubicación completa (Nivel, Pasillo, Lado, Sección)\n"
+                "2. 📧 Correo electrónico\n"
+                "3. 🚚 Tiempo de entrega")
         bot.reply_to(m, msg, parse_mode="Markdown")
     except: 
         bot.reply_to(m, "❌ Error al iniciar edición.")
 
 def ejecutar_mov(m, fila, tipo, cant):
     try:
-        f_data = stock.row_values(fila)
+        # MEJORA: Usar data_cache
+        f_data = data_cache.get(fila)
         nombre = f_data[0]
         current = num(f_data[1]) or 0
         
@@ -266,6 +282,8 @@ def ejecutar_mov(m, fila, tipo, cant):
         ahora = datetime.now(ZoneInfo("America/Santo_Domingo")).strftime("%Y-%m-%d %H:%M:%S")
         mov.append_row([ahora, nombre.lower(), etiqueta, float(valor_final), m.from_user.first_name], value_input_option="USER_ENTERED")
         bot.reply_to(m, f"✅ {etiqueta} de *{nombre}* registrada ({valor_final}).")
+        # Después de un movimiento, invalidamos para que el stock se actualice en la siguiente consulta
+        invalidar_indice()
     except Exception as e: 
         bot.reply_to(m, f"❌ Error en registro: {e}")
 
@@ -284,7 +302,6 @@ def ejecutar_eliminacion(m, fila):
 def manejador_pasos(m):
     cid = m.chat.id
     
-    # 1. Manejo de Selecciones Numéricas (Menús de búsqueda)
     if cid in opciones_temp and m.text.isdigit():
         data = opciones_temp[cid]
         idx = int(m.text) - 1
@@ -299,15 +316,12 @@ def manejador_pasos(m):
             else: ejecutar_mov(m, fila, data["tipo"], data["cantidad"])
             return
 
-    # 2. Manejo de Flujos (Nuevo / Editar)
     if cid in estado:
         d = estado[cid]
         modo = d.get("modo")
         
-        # MEJORA: Lógica de edición optimizada
         if modo == "editar":
             p = d["paso"]
-            
             if p == "menu":
                 if m.text == "1":
                     d["paso"] = "nivel"
@@ -322,7 +336,6 @@ def manejador_pasos(m):
                     bot.reply_to(m, "❌ Selecciona 1, 2 o 3.")
                 return
 
-            # Diccionario de rutas según la elección del menú
             rutas = {
                 "nivel": ("C", "pasillo", "➡️ Pasillo:"),
                 "pasillo": ("D", "lado", "↔️ Lado:"),
@@ -334,8 +347,6 @@ def manejador_pasos(m):
 
             if p in rutas:
                 col, sig, msg_ok = rutas[p]
-                
-                # Validación para números
                 if p == "solo_tiempo" and num(m.text) is None:
                     bot.reply_to(m, "❌ Ingresa un número:"); return
                 
@@ -343,6 +354,7 @@ def manejador_pasos(m):
                     stock.update_acell(f"{col}{d['fila']}", m.text.strip())
                     if sig == "fin":
                         with lock: estado.pop(cid, None)
+                        invalidar_indice()
                         bot.reply_to(m, msg_ok)
                     else:
                         d["paso"] = sig
