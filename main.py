@@ -387,7 +387,7 @@ def manejador_pasos(m):
                 try:
                     fila = len(stock.get_all_values()) + 1
                     f_st = f'=SI.ERROR(SUMAR.SI(Movimientos!B:B, A{fila}, Movimientos!D:D), 0)'
-                    f_di = f'=SI.ERROR(MIN(6, HOY() - QUERY(Movimientos!A:D, "select A where B = \'" & A{fila} & "\' order by A asc limit 1", 0)), 0)'
+                    f_di = f'=SI.ERROR(MIN(6, HOY() - ENTERO(QUERY(Movimientos!A:D, "select A where B = \'" & A{fila} & "\' order by A asc limit 1", 0))), 0)'
                     f_co = f'=SI.ERROR(ABS(SUMAR.SI.CONJUNTO(Movimientos!D:D, Movimientos!B:B, MINUSC(A{fila}), Movimientos!C:C, "Salida")) / H{fila}, 0)'
 
                     stock.update(
