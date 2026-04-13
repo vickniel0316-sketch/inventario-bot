@@ -142,7 +142,6 @@ def cmd_ver(m):
     if not res: bot.reply_to(m, "❌ No encontrado.")
     elif isinstance(res, list):
         with lock: opciones_temp[m.chat.id] = {"opciones": res, "modo": "ver"}
-        # Usamos row_values para evitar loops de .cell()
         msg = "🔍 Selecciona:\n"
         for i, f in enumerate(res):
             msg += f"{i+1}. {stock.cell(f,1).value}\n"
@@ -181,7 +180,6 @@ def cmd_pedidos(m):
         data = stock.get_all_values()
         if len(data) < 2: return
         headers = [h.lower().strip() for h in data[0]]
-        # Diccionario dinámico para evitar errores si mueves columnas
         idx = {n: headers.index(n) if n in headers else -1 for n in ["stock_actual", "consumo_dia", "tiempo_entrega", "unidades_caja", "dias"]}
         
         txt, hay = "📦 *PEDIDOS*\n\n", False
@@ -199,7 +197,6 @@ def cmd_pedidos(m):
 def cmd_movimientos(m):
     try:
         p = m.text.split()
-        # FIX 2: Validar longitud de mensaje para evitar CRASH
         if len(p) < 3:
             bot.reply_to(m, "❌ Formato: `[tipo] [producto] [cantidad]`")
             return
@@ -234,16 +231,24 @@ def mostrar_detalles(m, fila):
         bot.reply_to(m, msg, parse_mode="Markdown")
     except: bot.reply_to(m, "❌ Error detalles.")
 
+# MEJORA: Inicio de edición con menú de opciones
 def iniciar_edicion(m, fila):
     try:
         nombre = stock.cell(fila, 1).value
-        with lock: estado[m.chat.id] = {"modo": "editar", "fila": fila, "paso": "nivel"}
-        bot.reply_to(m, f"🛠 Editando: *{nombre}*\n📌 Nivel:")
-    except: bot.reply_to(m, "❌ Error al iniciar edición.")
+        with lock: 
+            estado[m.chat.id] = {"modo": "editar", "fila": fila, "paso": "menu"}
+        
+        msg = (f"🛠 *Editando:* {nombre}\n\n"
+               "¿Qué deseas modificar?\n"
+               "1. 📍 Ubicación completa (Nivel, Pasillo, Lado, Sección)\n"
+               "2. 📧 Correo electrónico\n"
+               "3. 🚚 Tiempo de entrega")
+        bot.reply_to(m, msg, parse_mode="Markdown")
+    except: 
+        bot.reply_to(m, "❌ Error al iniciar edición.")
 
 def ejecutar_mov(m, fila, tipo, cant):
     try:
-        # FIX: Leer fila completa una sola vez
         f_data = stock.row_values(fila)
         nombre = f_data[0]
         current = num(f_data[1]) or 0
@@ -279,7 +284,7 @@ def ejecutar_eliminacion(m, fila):
 def manejador_pasos(m):
     cid = m.chat.id
     
-    # 1. Manejo de Selecciones Numéricas
+    # 1. Manejo de Selecciones Numéricas (Menús de búsqueda)
     if cid in opciones_temp and m.text.isdigit():
         data = opciones_temp[cid]
         idx = int(m.text) - 1
@@ -299,20 +304,51 @@ def manejador_pasos(m):
         d = estado[cid]
         modo = d.get("modo")
         
+        # MEJORA: Lógica de edición optimizada
         if modo == "editar":
-            pasos = {"nivel": ("C", "pasillo", "➡️ Pasillo:"), 
-                     "pasillo": ("D", "lado", "↔️ Lado:"), 
-                     "lado": ("E", "seccion", "🔢 Sección:"), 
-                     "seccion": ("F", "fin", "✅ Ubicación Editada.")}
+            p = d["paso"]
             
-            col, sig, msg = pasos[d["paso"]]
-            stock.update_acell(f"{col}{d['fila']}", m.text.strip())
-            if sig == "fin": 
-                with lock: estado.pop(cid, None)
-                bot.reply_to(m, msg)
-            else: 
-                d["paso"] = sig
-                bot.reply_to(m, msg)
+            if p == "menu":
+                if m.text == "1":
+                    d["paso"] = "nivel"
+                    bot.reply_to(m, "📌 Nuevo Nivel:")
+                elif m.text == "2":
+                    d["paso"] = "solo_email"
+                    bot.reply_to(m, "📧 Nuevo Correo:")
+                elif m.text == "3":
+                    d["paso"] = "solo_tiempo"
+                    bot.reply_to(m, "🚚 Nuevo Tiempo de entrega (días):")
+                else:
+                    bot.reply_to(m, "❌ Selecciona 1, 2 o 3.")
+                return
+
+            # Diccionario de rutas según la elección del menú
+            rutas = {
+                "nivel": ("C", "pasillo", "➡️ Pasillo:"),
+                "pasillo": ("D", "lado", "↔️ Lado:"),
+                "lado": ("E", "seccion", "🔢 Sección:"),
+                "seccion": ("F", "fin", "✅ Ubicación actualizada."),
+                "solo_email": ("G", "fin", "✅ Correo actualizado."),
+                "solo_tiempo": ("J", "fin", "✅ Tiempo de entrega actualizado.")
+            }
+
+            if p in rutas:
+                col, sig, msg_ok = rutas[p]
+                
+                # Validación para números
+                if p == "solo_tiempo" and num(m.text) is None:
+                    bot.reply_to(m, "❌ Ingresa un número:"); return
+                
+                try:
+                    stock.update_acell(f"{col}{d['fila']}", m.text.strip())
+                    if sig == "fin":
+                        with lock: estado.pop(cid, None)
+                        bot.reply_to(m, msg_ok)
+                    else:
+                        d["paso"] = sig
+                        bot.reply_to(m, msg_ok)
+                except Exception as e:
+                    bot.reply_to(m, f"❌ Error API: {e}")
 
         elif modo == "nuevo":
             p = d["paso"]
