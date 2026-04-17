@@ -9,13 +9,14 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 # =========================
 # CONFIGURACIÓN DE APIS
 # =========================
+
 TOKEN = os.getenv("TOKEN")
 GOOGLE_CREDS = os.getenv("GOOGLE_CREDS")
 CHAT_ID = 6249114480
 
 creds = ServiceAccountCredentials.from_json_keyfile_dict(
     json.loads(GOOGLE_CREDS),
-    ["https://spreadsheets.google.com/feeds","https://www.googleapis.com/auth/drive"]
+    ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 )
 
 client = gspread.authorize(creds)
@@ -26,6 +27,7 @@ mov = ss.worksheet("Movimientos")
 # =========================
 # KEEP ALIVE (SERVIDOR)
 # =========================
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -41,12 +43,14 @@ threading.Thread(target=web, daemon=True).start()
 # =========================
 # MOTOR DEL BOT Y SEGURIDAD
 # =========================
+
 bot = telebot.TeleBot(TOKEN)
 estado = {}
 opciones_temp = {}
 lock = threading.Lock()
 
-def ok(m): return m.from_user.id == CHAT_ID
+def ok(m): 
+    return m.from_user.id == CHAT_ID
 
 def num(x):
     if x is None: return None
@@ -58,8 +62,9 @@ def num(x):
         return None
 
 # =========================
-# BÚSQUEDA INTELIGENTE PRO (MEJORADA)
+# BÚSQUEDA INTELIGENTE PRO
 # =========================
+
 indice = {}
 data_cache = {}  # CACHÉ DE FILAS COMPLETAS
 last_update = 0
@@ -72,7 +77,8 @@ def invalidar_indice():
 def normalizar(texto):
     texto = str(texto).lower().strip()
     reemplazos = {"á": "a", "é": "e", "í": "i", "ó": "o", "ú": "u", "acción": "accion"}
-    for k, v in reemplazos.items(): texto = texto.replace(k, v)
+    for k, v in reemplazos.items(): 
+        texto = texto.replace(k, v)
     return texto
 
 def tokenizar(texto):
@@ -82,7 +88,8 @@ def tokenizar(texto):
     for p in palabras:
         tokens.add(p)
         if len(p) > 2: tokens.add(p[:3])
-        if any(c.isdigit() for c in p): tokens.add(''.join(filter(str.isdigit, p)))
+        if any(c.isdigit() for c in p): 
+            tokens.add(''.join(filter(str.isdigit, p)))
     return tokens
 
 def construir_indice():
@@ -94,7 +101,7 @@ def construir_indice():
         for i in range(1, len(data)):
             fila_num = i + 1
             fila_contenido = data[i]
-            nuevo_cache[fila_num] = fila_contenido # Guardamos la fila entera
+            nuevo_cache[fila_num] = fila_contenido
             nombre = fila_contenido[0]
             tokens = tokenizar(nombre)
             for t in tokens:
@@ -108,7 +115,8 @@ def construir_indice():
 
 def obtener_indice():
     global last_update
-    if time.time() - last_update > CACHE_TTL: construir_indice()
+    if time.time() - last_update > CACHE_TTL: 
+        construir_indice()
     return indice
 
 def buscar_producto_inteligente(query):
@@ -136,14 +144,16 @@ def cmd_cancelar(m):
 
 @bot.message_handler(func=lambda m: ok(m) and m.text.lower() == "nuevo")
 def cmd_nuevo(m):
-    with lock: estado[m.chat.id] = {"modo": "nuevo", "paso": "nombre"}
+    with lock: 
+        estado[m.chat.id] = {"modo": "nuevo", "paso": "nombre"}
     bot.reply_to(m, "📝 Nombre del producto:")
 
 @bot.message_handler(func=lambda m: ok(m) and m.text.lower().startswith("ver "))
 def cmd_ver(m):
     prod = m.text[4:].strip()
     res = buscar_producto_inteligente(prod)
-    if not res: bot.reply_to(m, "❌ No encontrado.")
+    if not res: 
+        bot.reply_to(m, "❌ No encontrado.")
     elif isinstance(res, list):
         with lock: opciones_temp[m.chat.id] = {"opciones": res, "modo": "ver"}
         msg = "🔍 Selecciona:\n"
@@ -151,13 +161,15 @@ def cmd_ver(m):
             nombre = data_cache.get(f, ["???"])[0]
             msg += f"{i+1}. {nombre}\n"
         bot.reply_to(m, msg)
-    else: mostrar_detalles(m, res)
+    else: 
+        mostrar_detalles(m, res)
 
 @bot.message_handler(func=lambda m: ok(m) and m.text.lower().startswith("editar "))
 def cmd_editar(m):
     prod = m.text[7:].strip()
     res = buscar_producto_inteligente(prod)
-    if not res: bot.reply_to(m, "❌ No encontrado.")
+    if not res: 
+        bot.reply_to(m, "❌ No encontrado.")
     elif isinstance(res, list):
         with lock: opciones_temp[m.chat.id] = {"opciones": res, "modo": "editar"}
         msg = "📝 Selecciona para editar:\n"
@@ -165,13 +177,15 @@ def cmd_editar(m):
             nombre = data_cache.get(f, ["???"])[0]
             msg += f"{i+1}. {nombre}\n"
         bot.reply_to(m, msg)
-    else: iniciar_edicion(m, res)
+    else: 
+        iniciar_edicion(m, res)
 
 @bot.message_handler(func=lambda m: ok(m) and m.text.lower().startswith("eliminar "))
 def cmd_eliminar(m):
     prod = m.text[9:].strip()
     res = buscar_producto_inteligente(prod)
-    if not res: bot.reply_to(m, "❌ No encontrado.")
+    if not res: 
+        bot.reply_to(m, "❌ No encontrado.")
     elif isinstance(res, list):
         with lock: opciones_temp[m.chat.id] = {"opciones": res, "modo": "eliminar"}
         msg = "🗑️ Selecciona para ELIMINAR:\n"
@@ -179,28 +193,52 @@ def cmd_eliminar(m):
             nombre = data_cache.get(f, ["???"])[0]
             msg += f"{i+1}. {nombre}\n"
         bot.reply_to(m, msg)
-    else: ejecutar_eliminacion(m, res)
+    else: 
+        ejecutar_eliminacion(m, res)
 
 @bot.message_handler(func=lambda m: ok(m) and m.text.lower() == "pedidos")
 def cmd_pedidos(m):
     try:
-        # Usar obtener_indice para asegurar que el caché esté fresco
         obtener_indice()
         if not data_cache: return
-        
-        # Obtenemos los headers de la primera fila del caché real si es posible, 
-        # o asumimos el orden estándar para mayor velocidad.
-        txt, hay = "📦 *PEDIDOS*\n\n", False
+
+        txt = "📦 *PEDIDOS*\n\n"
+        hay = False
+
         for row in data_cache.values():
             if len(row) < 11: continue
-            # Indices: Stock(1), Consumo(8), Tiempo(9), Unidades(10), Dias(7)
-            s, c, t, u, d = [num(row[i]) or 0 for i in [1, 8, 9, 10, 7]]
-            if (d <= 3 and s < 5) or (c > 0 and s <= (c*t + c*2)):
-                cajas = math.ceil(((c*t + c*2 + c*5 if c>0 else 5) - s) / (u if u>0 else 1))
-                txt += f"{'🚨' if (c>0 and s <= c*(t+1)) else '⚠️'} {row[0]} → {max(1, cajas)} cajas\n"
+
+            nombre = row[0]
+            stock_actual = num(row[1]) or 0
+            consumo = num(row[8]) or 0
+            tiempo = num(row[9]) or 0
+            u_caja = num(row[10]) or 1
+            dias = num(row[7]) or 0
+
+            incluir = False
+            cajas = 0
+
+            # LÓGICA DE CÁLCULO
+            if dias <= 3:
+                stock_en_cajas = stock_actual / u_caja
+                minimo_cajas = 5
+                if stock_en_cajas < minimo_cajas:
+                    cajas = math.ceil(minimo_cajas - stock_en_cajas)
+                    incluir = True
+            elif consumo > 0:
+                punto_reorden = (consumo * tiempo) + (consumo * 2)
+                if stock_actual <= punto_reorden:
+                    objetivo = punto_reorden + (consumo * 5)
+                    cajas = max(1, math.ceil((objetivo - stock_actual) / u_caja))
+                    incluir = True
+
+            if incluir:
+                emoji = "🚨" if dias <= 3 else "⚠️"
+                txt += f"{emoji} {nombre} → {cajas} cajas\n"
                 hay = True
+
         bot.reply_to(m, txt if hay else "✅ Todo al día", parse_mode="Markdown")
-    except Exception as e: 
+    except Exception as e:
         bot.reply_to(m, f"❌ Error en Pedidos: {e}")
 
 @bot.message_handler(func=lambda m: ok(m) and m.text.lower().startswith(("entrada","salida","ajuste")))
@@ -219,7 +257,8 @@ def cmd_movimientos(m):
             return
             
         res = buscar_producto_inteligente(prod)
-        if not res: bot.reply_to(m, "❌ No existe.")
+        if not res: 
+            bot.reply_to(m, "❌ No existe.")
         elif isinstance(res, list):
             with lock: opciones_temp[m.chat.id] = {"opciones": res, "tipo": tipo, "cantidad": cant_val}
             msg = "⚠️ Selecciona:\n"
@@ -227,7 +266,8 @@ def cmd_movimientos(m):
                 nombre = data_cache.get(f, ["???"])[0]
                 msg += f"{i+1}. {nombre}\n"
             bot.reply_to(m, msg)
-        else: ejecutar_mov(m, res, tipo, cant_val)
+        else: 
+            ejecutar_mov(m, res, tipo, cant_val)
     except Exception as e: 
         bot.reply_to(m, "❌ Error en comando.")
 
@@ -237,34 +277,32 @@ def cmd_movimientos(m):
 
 def mostrar_detalles(m, fila):
     try:
-        # MEJORA: Usar data_cache en lugar de llamar a Google Sheets
         f = data_cache.get(fila)
         if not f: 
             bot.reply_to(m, "❌ Error: Datos no encontrados en caché.")
             return
         msg = f"📦 *PRODUCTO:* {f[0].upper()}\n📊 *Stock:* {f[1]}\n📍 *Ub:* P{f[3]}|L{f[4]}|S{f[5]}|N{f[2]}\n📉 *Consumo:* {f[8] if len(f)>8 else '0'}"
         bot.reply_to(m, msg, parse_mode="Markdown")
-    except: bot.reply_to(m, "❌ Error detalles.")
+    except: 
+        bot.reply_to(m, "❌ Error detalles.")
 
 def iniciar_edicion(m, fila):
     try:
-        # MEJORA: Usar data_cache
         nombre = data_cache.get(fila, ["???"])[0]
         with lock: 
             estado[m.chat.id] = {"modo": "editar", "fila": fila, "paso": "menu"}
         
         msg = (f"🛠 *Editando:* {nombre}\n\n"
-                "¿Qué deseas modificar?\n"
-                "1. 📍 Ubicación completa (Nivel, Pasillo, Lado, Sección)\n"
-                "2. 📧 Correo electrónico\n"
-                "3. 🚚 Tiempo de entrega")
+               "¿Qué deseas modificar?\n"
+               "1. 📍 Ubicación completa (Nivel, Pasillo, Lado, Sección)\n"
+               "2. 📧 Correo electrónico\n"
+               "3. 🚚 Tiempo de entrega")
         bot.reply_to(m, msg, parse_mode="Markdown")
     except: 
         bot.reply_to(m, "❌ Error al iniciar edición.")
 
 def ejecutar_mov(m, fila, tipo, cant):
     try:
-        # MEJORA: Usar data_cache
         f_data = data_cache.get(fila)
         nombre = f_data[0]
         current = num(f_data[1]) or 0
@@ -282,7 +320,6 @@ def ejecutar_mov(m, fila, tipo, cant):
         ahora = datetime.now(ZoneInfo("America/Santo_Domingo")).strftime("%Y-%m-%d %H:%M:%S")
         mov.append_row([ahora, nombre.lower(), etiqueta, float(valor_final), m.from_user.first_name], value_input_option="USER_ENTERED")
         bot.reply_to(m, f"✅ {etiqueta} de *{nombre}* registrada ({valor_final}).")
-        # Después de un movimiento, invalidamos para que el stock se actualice en la siguiente consulta
         invalidar_indice()
     except Exception as e: 
         bot.reply_to(m, f"❌ Error en registro: {e}")
@@ -292,10 +329,11 @@ def ejecutar_eliminacion(m, fila):
         stock.delete_rows(fila)
         invalidar_indice()
         bot.reply_to(m, "🗑️ Producto eliminado.")
-    except: bot.reply_to(m, "❌ Error eliminar.")
+    except: 
+        bot.reply_to(m, "❌ Error eliminar.")
 
 # =========================
-# MANEJADOR DE PASOS Y SELECCIONES
+# MANEJADOR DE PASOS
 # =========================
 
 @bot.message_handler(func=lambda m: ok(m) and (m.chat.id in estado or m.chat.id in opciones_temp))
@@ -369,7 +407,9 @@ def manejador_pasos(m):
                 bot.reply_to(m, "📦 Stock inicial:")
             elif p == "stock":
                 val = num(m.text)
-                if val is None: bot.reply_to(m, "❌ Stock inicial (número):"); return
+                if val is None: 
+                    bot.reply_to(m, "❌ Stock inicial (número):")
+                    return
                 d["s"], d["paso"] = val, "nivel"; bot.reply_to(m, "📌 Nivel:")
             elif p == "nivel": d["ni"], d["paso"] = m.text.strip(), "pasillo"; bot.reply_to(m, "➡️ Pasillo:")
             elif p == "pasillo": d["pa"], d["paso"] = m.text.strip(), "lado"; bot.reply_to(m, "↔️ Lado:")
@@ -377,11 +417,15 @@ def manejador_pasos(m):
             elif p == "seccion": d["se"], d["paso"] = m.text.strip(), "t"; bot.reply_to(m, "🚚 Tiempo entrega:")
             elif p == "t":
                 val = num(m.text)
-                if val is None: bot.reply_to(m, "❌ Tiempo entrega (número):"); return
+                if val is None: 
+                    bot.reply_to(m, "❌ Tiempo entrega (número):")
+                    return
                 d["t"], d["paso"] = val, "u"; bot.reply_to(m, "📦 Unidades/Caja:")
             elif p == "u":
                 val = num(m.text)
-                if val is None: bot.reply_to(m, "❌ Unidades por caja (número):"); return
+                if val is None: 
+                    bot.reply_to(m, "❌ Unidades por caja (número):")
+                    return
                 d["u"], d["paso"] = val, "e"; bot.reply_to(m, "📧 Email:")
             elif p == "e":
                 try:
@@ -408,7 +452,10 @@ def manejador_pasos(m):
 # =========================
 # LANZAMIENTO
 # =========================
+
 bot.remove_webhook()
 while True:
-    try: bot.polling(none_stop=True)
-    except: time.sleep(5)
+    try: 
+        bot.polling(none_stop=True)
+    except: 
+        time.sleep(5)
