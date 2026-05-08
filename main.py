@@ -12,20 +12,16 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 TOKEN = os.getenv("TOKEN")
 GOOGLE_CREDS = os.getenv("GOOGLE_CREDS")
-CHAT_ID = 6249114480
+CHAT_ID = 6249114480  # <--- ASEGÚRATE QUE ESTE SEA TU ID
 
-creds = ServiceAccountCredentials.from_json_keyfile_dict(
-    json.loads(GOOGLE_CREDS),
-    ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-)
-
-client = gspread.authorize(creds)
-ss = client.open("inventario_vickniel01")
-stock = ss.worksheet("Stock")
-mov = ss.worksheet("Movimientos")
+# Función de seguridad
+def ok(m):
+    # Este print es CLAVE: te dirá en el log quién le está escribiendo al bot
+    print(f"DEBUG: Mensaje recibido de ID {m.from_user.id}")
+    return m.from_user.id == CHAT_ID
 
 # =========================
-# KEEP ALIVE (SERVIDOR MEJORADO)
+# KEEP ALIVE (SERVIDOR)
 # =========================
 
 class Handler(BaseHTTPRequestHandler):
@@ -34,15 +30,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-type', 'text/html')
         self.end_headers()
         self.wfile.write(b"Bot is Live")
-
-    def do_HEAD(self): # Añadido para evitar el error 501 que vimos en tus logs
+    def do_HEAD(self):
         self.send_response(200)
         self.end_headers()
 
 def run_web_server():
-    port = int(os.environ.get("PORT", 10000)) # Puerto estándar de Render
+    port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(("0.0.0.0", port), Handler)
-    print(f"Servidor web iniciado en puerto {port}")
+    print(f"LOG: Servidor web iniciado en puerto {port}")
     server.serve_forever()
 
 # =========================
@@ -50,31 +45,41 @@ def run_web_server():
 # =========================
 
 bot = telebot.TeleBot(TOKEN)
-estado = {}
-opciones_temp = {}
-lock = threading.Lock()
 
-# ... (Aquí va todo tu código de lógica: ok, num, normalizar, tokenizar, etc.)
-# Mantén todas tus funciones de búsqueda y comandos exactamente igual hasta llegar al final
+@bot.message_handler(func=lambda m: True) # Responde a TODOS para la prueba
+def prueba_conexion(m):
+    print(f"LOG: Procesando mensaje de {m.from_user.first_name}")
+    bot.reply_to(m, f"✅ ¡Hola César! El bot está vivo. Tu ID es: {m.from_user.id}")
 
 # =========================
-# LANZAMIENTO FINAL (CORREGIDO)
+# LANZAMIENTO
 # =========================
 
 if __name__ == "__main__":
-    # 1. Limpiar Webhook por si acaso
+    print("LOG: Iniciando despliegue...")
+    
+    # 1. Limpiar Webhook
     bot.remove_webhook()
     
-    # 2. Iniciar el servidor web en un HILO SEPARADO
+    # 2. Servidor Web (Hilo separado)
     web_thread = threading.Thread(target=run_web_server)
     web_thread.daemon = True
     web_thread.start()
     
-    # 3. Bucle principal del Bot con manejo de errores
-    print("Bot iniciando polling...")
+    # 3. Intento de conexión a Google (Opcional para esta prueba)
+    try:
+        print("LOG: Intentando conectar con Google Sheets...")
+        # Aquí iría tu lógica de credenciales si quieres probarla de una vez
+        # creds = ServiceAccountCredentials.from_json_keyfile_dict(...)
+        print("LOG: Conexión a Google exitosa (o saltada para prueba).")
+    except Exception as e:
+        print(f"ERROR GOOGLE: {e}")
+
+    # 4. Iniciar Polling
+    print(">>> BOT INICIANDO POLLING AHORA <<<")
     while True:
         try:
-            bot.polling(none_stop=True, timeout=60, long_polling_timeout=60)
+            bot.polling(none_stop=True, timeout=60)
         except Exception as e:
-            print(f"Error en polling: {e}")
+            print(f"ERROR POLLING: {e}")
             time.sleep(10)
