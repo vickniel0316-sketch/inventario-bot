@@ -5,7 +5,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 TOKEN = os.getenv("TOKEN")
 bot = telebot.TeleBot(TOKEN)
 
-# Servidor básico para que Render no falle
+# Servidor para Render
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -17,30 +17,25 @@ def run_web_server():
     server = HTTPServer(("0.0.0.0", port), Handler)
     server.serve_forever()
 
+# Tu lógica de prueba
+@bot.message_handler(func=lambda m: True)
+def responder(m):
+    bot.reply_to(m, f"✅ ¡Conexión exitosa! Tu ID es: {m.from_user.id}")
+
 if __name__ == "__main__":
-    # 1. Iniciar servidor web
+    # 1. Servidor web para mantener vivo el servicio en Render
     threading.Thread(target=run_web_server, daemon=True).start()
     
-    print("LOG: Iniciando limpieza de sesión...")
-    try:
-        bot.remove_webhook()
-        # Log_out fuerza el cierre de todas las sesiones de polling activas
-        bot.log_out() 
-        print("LOG: Sesión cerrada en servidores de Telegram. Esperando 10 segundos...")
-    except Exception as e:
-        print(f"LOG: Nota de limpieza: {e}")
-    
-    # Pausa obligatoria para que Telegram procese el cierre
-    time.sleep(10)
+    # 2. Limpieza rápida (sin log_out)
+    print("LOG: Limpiando Webhook...")
+    bot.remove_webhook()
+    time.sleep(2) 
 
-    @bot.message_handler(func=lambda m: True)
-    def test(m):
-        bot.reply_to(m, "¡POR FIN! Conexión establecida.")
-
-    print(">>> INTENTANDO CONECTAR NUEVAMENTE <<<")
+    # 3. Inicio del Bot
+    print(">>> BOT ESCUCHANDO MENSAJES <<<")
     while True:
         try:
-            bot.polling(none_stop=True, interval=1, timeout=20)
+            bot.polling(none_stop=True, interval=0, timeout=20)
         except Exception as e:
-            print(f"LOG: Reintentando... ({e})")
+            print(f"LOG: Error en polling: {e}")
             time.sleep(5)
