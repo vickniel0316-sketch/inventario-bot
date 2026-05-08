@@ -5,9 +5,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 TOKEN = os.getenv("TOKEN")
 bot = telebot.TeleBot(TOKEN)
 
-# =========================
-# SERVIDOR PARA RENDER
-# =========================
+# Servidor básico para que Render no falle
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -19,30 +17,30 @@ def run_web_server():
     server = HTTPServer(("0.0.0.0", port), Handler)
     server.serve_forever()
 
-# =========================
-# BOT DE PRUEBA
-# =========================
-@bot.message_handler(func=lambda m: True)
-def echo(m):
-    bot.reply_to(m, f"✅ ¡Conectado! Tu ID es {m.from_user.id}")
-
 if __name__ == "__main__":
-    # 1. ARRANCAR WEB SERVER PRIMERO
+    # 1. Iniciar servidor web
     threading.Thread(target=run_web_server, daemon=True).start()
     
-    # 2. LIMPIEZA PROFUNDA DE CONEXIÓN
-    print("LOG: Limpiando Webhooks y sesiones colgadas...")
-    bot.remove_webhook()
-    time.sleep(2) # Pausa técnica
+    print("LOG: Iniciando limpieza de sesión...")
+    try:
+        bot.remove_webhook()
+        # Log_out fuerza el cierre de todas las sesiones de polling activas
+        bot.log_out() 
+        print("LOG: Sesión cerrada en servidores de Telegram. Esperando 10 segundos...")
+    except Exception as e:
+        print(f"LOG: Nota de limpieza: {e}")
     
-    # 3. BUCLE DE REINTENTO PARA EL ERROR 409
-    print(">>> INICIANDO POLLING <<<")
+    # Pausa obligatoria para que Telegram procese el cierre
+    time.sleep(10)
+
+    @bot.message_handler(func=lambda m: True)
+    def test(m):
+        bot.reply_to(m, "¡POR FIN! Conexión establecida.")
+
+    print(">>> INTENTANDO CONECTAR NUEVAMENTE <<<")
     while True:
         try:
-            bot.polling(none_stop=True, interval=0, timeout=20)
+            bot.polling(none_stop=True, interval=1, timeout=20)
         except Exception as e:
-            if "409" in str(e):
-                print("LOG: Conflicto 409 detectado. Reintentando en 5s...")
-            else:
-                print(f"LOG: Error: {e}")
+            print(f"LOG: Reintentando... ({e})")
             time.sleep(5)
