@@ -147,6 +147,28 @@ def cmd_ver(m):
         bot.reply_to(m, msg)
     else: mostrar_detalles(m, res)
 
+@bot.message_handler(func=lambda m: ok(m) and m.text.lower().startswith("editar "))
+def cmd_editar(m):
+    res = buscar_producto_inteligente(m.text[7:].strip())
+    if not res: bot.reply_to(m, "❌ No encontrado.")
+    elif isinstance(res, list):
+        with lock: opciones_temp[m.chat.id] = {"opciones": res, "modo": "editar"}
+        msg = "📝 Selecciona para editar:\n" + "\n".join([f"{i+1}. {data_cache.get(f, ['???'])[0]}" for i, f in enumerate(res)])
+        bot.reply_to(m, msg)
+    else: iniciar_edicion(m, res)
+
+@bot.message_handler(func=lambda m: ok(m) and m.text.lower().startswith("eliminar "))
+def cmd_eliminar(m):
+    res = buscar_producto_inteligente(m.text[9:].strip())
+    if not res: bot.reply_to(m, "❌ No encontrado.")
+    elif isinstance(res, list):
+        with lock: opciones_temp[m.chat.id] = {"opciones": res, "modo": "eliminar"}
+        msg = "🗑️ Selecciona para ELIMINAR:\n" + "\n".join([f"{i+1}. {data_cache.get(f, ['???'])[0]}" for i, f in enumerate(res)])
+        bot.reply_to(m, msg)
+    else:
+        with lock: opciones_temp[m.chat.id] = {"opciones": [res], "modo": "eliminar"}
+        bot.reply_to(m, f"⚠️ Confirmar eliminar {data_cache.get(res)[0]}? (Escribe 1)")
+
 @bot.message_handler(func=lambda m: ok(m) and m.text.lower() == "pedidos")
 def cmd_pedidos(m):
     try:
@@ -184,7 +206,7 @@ def cmd_movimientos(m):
     except: bot.reply_to(m, "❌ Error en comando.")
 
 # =========================
-# LÓGICA DE APOYO (CON TRY/EXCEPT)
+# LÓGICA DE APOYO
 # =========================
 
 def mostrar_detalles(m, fila):
@@ -193,6 +215,11 @@ def mostrar_detalles(m, fila):
         msg = f"📦 *PRODUCTO:* {f[0].upper()}\n📊 *Stock:* {f[1]}\n📍 *Ub:* P{f[3]}|L{f[4]}|S{f[5]}|N{f[2]}\n📉 *Consumo:* {f[8]}"
         bot.reply_to(m, msg, parse_mode="Markdown")
     except: bot.reply_to(m, "❌ Error detalles.")
+
+def iniciar_edicion(m, fila):
+    nombre = data_cache.get(fila, ["???"])[0]
+    with lock: estado[m.chat.id] = {"modo": "editar", "fila": fila, "paso": "menu"}
+    bot.reply_to(m, f"🛠 *Editando:* {nombre}\n1. Ubicación\n2. Email\n3. Tiempo entrega")
 
 def ejecutar_mov(m, fila, tipo, cant):
     try:
@@ -206,31 +233,46 @@ def ejecutar_mov(m, fila, tipo, cant):
     except Exception as e: bot.reply_to(m, f"❌ Error: {e}")
 
 # =========================
-# MANEJADOR DE PASOS (CON VALIDACIÓN)
+# MANEJADOR DE PASOS
 # =========================
 
 @bot.message_handler(func=lambda m: ok(m))
 def manejador_pasos(m):
     cid = m.chat.id
+    
     if cid in opciones_temp and m.text.isdigit():
         data = opciones_temp.pop(cid)
         idx = int(m.text) - 1
         if 0 <= idx < len(data["opciones"]):
             fila = data["opciones"][idx]
             if data.get("modo") == "ver": mostrar_detalles(m, fila)
-            elif data.get("modo") == "editar": 
-                with lock: estado[cid] = {"modo": "editar", "fila": fila, "paso": "menu"}
-                bot.reply_to(m, "🛠 1.Ub 2.Email 3.Tiempo")
-            elif data.get("modo") == "eliminar": 
+            elif data.get("modo") == "editar": iniciar_edicion(m, fila)
+            elif data.get("modo") == "eliminar":
                 stock.delete_rows(fila); invalidar_indice(); bot.reply_to(m, "🗑️ Eliminado.")
             else: ejecutar_mov(m, fila, data["tipo"], data["cantidad"])
         return
 
     if cid in estado:
         d = estado[cid]
-        if d["modo"] == "nuevo":
+        if d["modo"] == "editar":
             p = d["paso"]
-            if p == "nombre": d["n"], d["paso"] = m.text.strip(), "stock"; bot.reply_to(m, "📦 Stock inicial:")
+            if p == "menu":
+                if m.text == "1": d["paso"] = "nivel"; bot.reply_to(m, "📌 Nuevo Nivel:")
+                elif m.text == "2": d["paso"] = "solo_email"; bot.reply_to(m, "📧 Nuevo Correo:")
+                elif m.text == "3": d["paso"] = "solo_tiempo"; bot.reply_to(m, "🚚 Nuevo Tiempo:")
+                return
+            rutas = {"nivel": ("C", "pasillo", "➡️ Pasillo:"), "pasillo": ("D", "lado", "↔️ Lado:"), "lado": ("E", "seccion", "🔢 Sección:"), "seccion": ("F", "fin", "✅ Ubicación ok"), "solo_email": ("G", "fin", "✅ Correo ok"), "solo_tiempo": ("J", "fin", "✅ Tiempo ok")}
+            if p in rutas:
+                col, sig, msg = rutas[p]
+                try:
+                    stock.update_acell(f"{col}{d['fila']}", m.text.strip())
+                    if sig == "fin": estado.pop(cid); invalidar_indice(); bot.reply_to(m, msg)
+                    else: d["paso"] = sig; bot.reply_to(m, msg)
+                except Exception as e: bot.reply_to(m, f"❌ Error API: {e}")
+        
+        elif d["modo"] == "nuevo":
+            p = d["paso"]
+            if p == "nombre": d["n"], d["paso"] = m.text.strip(), "stock"; bot.reply_to(m, "📦 Stock:")
             elif p == "stock":
                 val = num(m.text)
                 if val is None: bot.reply_to(m, "❌ Número requerido:"); return
