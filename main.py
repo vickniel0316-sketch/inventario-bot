@@ -4,7 +4,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import os, json, time, threading, math
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # =========================
 # CONFIGURACIÓN DE APIS
@@ -48,7 +48,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def web():
     port = int(os.environ.get("PORT", 8080))
-    HTTPServer(("0.0.0.0", port), Handler).serve_forever()
+    ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
 
 threading.Thread(target=web, daemon=True).start()
 
